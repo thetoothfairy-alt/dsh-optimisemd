@@ -33,8 +33,12 @@ package's `prepare` builds the addon from source:
 
 ```sh
 cd ~/.dsh/profiles/web
-dsh plugin --profile web add github:bwra/dsh-optimisemd#v0.1.0
+dsh plugin --profile web add github:thetoothfairy-alt/dsh-optimisemd#v0.1.0
 ```
+
+`dsh` prints the exact `allowBuilds` key to paste into the profile's `pnpm-workspace.yaml` the first time (pnpm blocks
+git-hosted build scripts until allowed); paste it and re-run the command. `pnpm peers check` then reports `@deepseek-ai/cordis`
+and `@deepseek-ai/dsh-tools` as missing peers — the harness supplies them at runtime, the same way `dsh-memento` gets them.
 
 From a checkout (development — needs the Rust toolchain; `prepare` builds the addon):
 
