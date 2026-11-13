@@ -12,11 +12,17 @@ jobs:
         include:
           - os: ubuntu-latest
             target: linux-x64
+            optional: false
           - os: macos-14
             target: darwin-arm64
+            optional: true
           - os: windows-latest
             target: win32-x64
+            optional: false
     runs-on: ${{ matrix.os }}
+    # A macOS runner is not available on this account's plan; the build is optional so the two runners that exist still
+    # publish the addons. macOS users build from source on install (the package's prepare step does that).
+    continue-on-error: ${{ matrix.optional }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

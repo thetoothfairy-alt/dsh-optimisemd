@@ -1,8 +1,8 @@
 //! Native addon surface for the `dsh-optimisemd` plugin. Everything crosses as plain data; no async,
 //! no threads: the store is a local SQLite file and the calls are microseconds.
 
-use optimisemd_core::{Budgets, Entry, Store};
 use napi_derive::napi;
+use optimisemd_core::{Budgets, Entry, Store};
 use std::path::Path;
 
 #[napi(object)]
@@ -21,8 +21,15 @@ pub struct NativeEntry {
 impl From<Entry> for NativeEntry {
     fn from(e: Entry) -> Self {
         Self {
-            id: e.id, track: e.track, scope: e.scope, workspace_key: e.workspace_key,
-            agent_key: e.agent_key, text: e.text, tags: e.tags, source: e.source, created_at: e.created_at,
+            id: e.id,
+            track: e.track,
+            scope: e.scope,
+            workspace_key: e.workspace_key,
+            agent_key: e.agent_key,
+            text: e.text,
+            tags: e.tags,
+            source: e.source,
+            created_at: e.created_at,
         }
     }
 }
@@ -58,27 +65,78 @@ impl MemoryStore {
 
     #[napi]
     pub fn list_entries(&self) -> napi::Result<Vec<NativeEntry>> {
-        Ok(self.inner.list_entries().map_err(fail)?.into_iter().map(Into::into).collect())
+        Ok(self
+            .inner
+            .list_entries()
+            .map_err(fail)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    // The addon mirrors the store's fields one-to-one; napi needs them as separate arguments.
+    #[allow(clippy::too_many_arguments)]
+    #[napi]
+    pub fn add(
+        &self,
+        track: String,
+        scope: String,
+        text: String,
+        tags: Vec<String>,
+        source: String,
+        workspace_key: String,
+        agent_key: String,
+        session: String,
+    ) -> napi::Result<String> {
+        self.inner
+            .add(
+                &track,
+                &scope,
+                &text,
+                &tags,
+                &source,
+                &workspace_key,
+                &agent_key,
+                &session,
+            )
+            .map_err(fail)
     }
 
     #[napi]
-    pub fn add(&self, track: String, scope: String, text: String, tags: Vec<String>, source: String, workspace_key: String, agent_key: String, session: String) -> napi::Result<String> {
-        self.inner.add(&track, &scope, &text, &tags, &source, &workspace_key, &agent_key, &session).map_err(fail)
-    }
-
-    #[napi]
-    pub fn replace(&self, needle: String, text: String, session: String) -> napi::Result<NativeEntry> {
-        self.inner.replace(&needle, &text, &session).map(Into::into).map_err(fail)
+    pub fn replace(
+        &self,
+        needle: String,
+        text: String,
+        session: String,
+    ) -> napi::Result<NativeEntry> {
+        self.inner
+            .replace(&needle, &text, &session)
+            .map(Into::into)
+            .map_err(fail)
     }
 
     #[napi]
     pub fn remove(&self, needle: String, session: String) -> napi::Result<NativeEntry> {
-        self.inner.remove(&needle, &session).map(Into::into).map_err(fail)
+        self.inner
+            .remove(&needle, &session)
+            .map(Into::into)
+            .map_err(fail)
     }
 
     #[napi]
-    pub fn query(&self, pattern: String, limit: u32, session: String) -> napi::Result<Vec<NativeEntry>> {
-        Ok(self.inner.query(&pattern, limit as usize, &session).map_err(fail)?.into_iter().map(Into::into).collect())
+    pub fn query(
+        &self,
+        pattern: String,
+        limit: u32,
+        session: String,
+    ) -> napi::Result<Vec<NativeEntry>> {
+        Ok(self
+            .inner
+            .query(&pattern, limit as usize, &session)
+            .map_err(fail)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     #[napi]
@@ -93,11 +151,16 @@ impl MemoryStore {
 
     #[napi]
     pub fn snapshot(&self, workspace_key: String, agent_key: String) -> napi::Result<String> {
-        self.inner.snapshot(&workspace_key, &agent_key).map_err(fail)
+        self.inner
+            .snapshot(&workspace_key, &agent_key)
+            .map_err(fail)
     }
 
     #[napi]
     pub fn import_from_memento(&self, path: String) -> napi::Result<u32> {
-        Ok(self.inner.import_from_memento(Path::new(&path)).map_err(fail)? as u32)
+        Ok(self
+            .inner
+            .import_from_memento(Path::new(&path))
+            .map_err(fail)? as u32)
     }
 }

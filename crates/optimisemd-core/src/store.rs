@@ -12,7 +12,10 @@ pub struct Budgets {
 
 impl Default for Budgets {
     fn default() -> Self {
-        Self { user: 2000, agent: 4000 }
+        Self {
+            user: 2000,
+            agent: 4000,
+        }
     }
 }
 
@@ -42,7 +45,12 @@ pub enum StoreError {
     #[error("ambiguous: {0} entries contain the match")]
     Ambiguous(usize),
     #[error("budget: {track}/{scope} would reach {after} of {cap} characters; consolidate first")]
-    Budget { track: String, scope: String, after: usize, cap: usize },
+    Budget {
+        track: String,
+        scope: String,
+        after: usize,
+        cap: usize,
+    },
 }
 
 pub struct Store {
@@ -94,7 +102,20 @@ impl Store {
             .unwrap_or(0)
     }
 
-    fn audit(&self, action: &str, track: &str, scope: &str, id: &str, text: &str, outcome: &str, source: &str, session: &str) -> Result<(), StoreError> {
+    // Nine named fields on one audit row is the shape the plugin's table has; grouping them into a struct would only
+    // move the same list to the call site.
+    #[allow(clippy::too_many_arguments)]
+    fn audit(
+        &self,
+        action: &str,
+        track: &str,
+        scope: &str,
+        id: &str,
+        text: &str,
+        outcome: &str,
+        source: &str,
+        session: &str,
+    ) -> Result<(), StoreError> {
         self.conn.execute(
             "insert into audit (ts,action,track,scope,entry_id,text,outcome,source,session_id) values (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
             rusqlite::params![Self::now_ms(), action, track, scope, id, text, outcome, source, session],
@@ -142,7 +163,18 @@ impl Store {
         Ok(out)
     }
 
-    pub fn add(&self, track: &str, scope: &str, text: &str, tags: &[String], source: &str, workspace_key: &str, agent_key: &str, session: &str) -> Result<String, StoreError> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn add(
+        &self,
+        track: &str,
+        scope: &str,
+        text: &str,
+        tags: &[String],
+        source: &str,
+        workspace_key: &str,
+        agent_key: &str,
+        session: &str,
+    ) -> Result<String, StoreError> {
         let text = text.trim();
         if text.is_empty() {
             return Err(StoreError::Invalid("text is empty".into()));
@@ -156,7 +188,12 @@ impl Store {
         let after = self.usage(track, scope)? + text.chars().count();
         let cap = self.cap(track);
         if after > cap {
-            return Err(StoreError::Budget { track: track.into(), scope: scope.into(), after, cap });
+            return Err(StoreError::Budget {
+                track: track.into(),
+                scope: scope.into(),
+                after,
+                cap,
+            });
         }
         let id = uuid::Uuid::new_v4().to_string();
         let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".into());
@@ -170,7 +207,10 @@ impl Store {
 
     fn find_matches(&self, needle: &str) -> Result<Vec<Entry>, StoreError> {
         let all = self.list_entries()?;
-        Ok(all.into_iter().filter(|e| e.text.contains(needle)).collect())
+        Ok(all
+            .into_iter()
+            .filter(|e| e.text.contains(needle))
+            .collect())
     }
 
     pub fn replace(&self, needle: &str, text: &str, session: &str) -> Result<Entry, StoreError> {
@@ -185,11 +225,29 @@ impl Store {
         let delta = text.chars().count() as isize - old.text.chars().count() as isize;
         let after = (self.usage(&old.track, &old.scope)? as isize + delta).max(0) as usize;
         if after > self.cap(&old.track) {
-            return Err(StoreError::Budget { track: old.track.clone(), scope: old.scope.clone(), after, cap: self.cap(&old.track) });
+            return Err(StoreError::Budget {
+                track: old.track.clone(),
+                scope: old.scope.clone(),
+                after,
+                cap: self.cap(&old.track),
+            });
         }
-        self.conn.execute("update entries set text=?1 where id=?2", rusqlite::params![text.trim(), old.id])?;
-        self.audit("replace", &old.track, &old.scope, &old.id, text, "applied", "memory-tool", session)?;
-        self.get(&old.id)?.ok_or_else(|| StoreError::NotFound(old.id.clone()))
+        self.conn.execute(
+            "update entries set text=?1 where id=?2",
+            rusqlite::params![text.trim(), old.id],
+        )?;
+        self.audit(
+            "replace",
+            &old.track,
+            &old.scope,
+            &old.id,
+            text,
+            "applied",
+            "memory-tool",
+            session,
+        )?;
+        self.get(&old.id)?
+            .ok_or_else(|| StoreError::NotFound(old.id.clone()))
     }
 
     pub fn remove(&self, needle: &str, session: &str) -> Result<Entry, StoreError> {
@@ -201,36 +259,55 @@ impl Store {
             return Err(StoreError::Ambiguous(matches.len()));
         }
         let old = matches.into_iter().next().expect("one match");
-        self.conn.execute("delete from entries where id=?1", rusqlite::params![old.id])?;
-        self.audit("remove", &old.track, &old.scope, &old.id, &old.text, "applied", "memory-tool", session)?;
+        self.conn
+            .execute("delete from entries where id=?1", rusqlite::params![old.id])?;
+        self.audit(
+            "remove",
+            &old.track,
+            &old.scope,
+            &old.id,
+            &old.text,
+            "applied",
+            "memory-tool",
+            session,
+        )?;
         Ok(old)
     }
 
     pub fn get(&self, id: &str) -> Result<Option<Entry>, StoreError> {
         let mut stmt = self.conn.prepare("select id,track,scope,workspace_key,agent_key,text,tags,source,created_at from entries where id=?1")?;
-        let row = stmt.query_row(rusqlite::params![id], |r| {
-            Ok(Entry {
-                id: r.get(0)?,
-                track: r.get(1)?,
-                scope: r.get(2)?,
-                workspace_key: r.get(3)?,
-                agent_key: r.get(4)?,
-                text: r.get(5)?,
-                tags: serde_json::from_str(&r.get::<_, String>(6)?).unwrap_or_default(),
-                source: r.get(7)?,
-                created_at: r.get(8)?,
+        let row = stmt
+            .query_row(rusqlite::params![id], |r| {
+                Ok(Entry {
+                    id: r.get(0)?,
+                    track: r.get(1)?,
+                    scope: r.get(2)?,
+                    workspace_key: r.get(3)?,
+                    agent_key: r.get(4)?,
+                    text: r.get(5)?,
+                    tags: serde_json::from_str(&r.get::<_, String>(6)?).unwrap_or_default(),
+                    source: r.get(7)?,
+                    created_at: r.get(8)?,
+                })
             })
-        }).optional()?;
+            .optional()?;
         Ok(row)
     }
 
     /// Case-insensitive substring search over every entry, newest first.
-    pub fn query(&self, pattern: &str, limit: usize, session: &str) -> Result<Vec<Entry>, StoreError> {
+    pub fn query(
+        &self,
+        pattern: &str,
+        limit: usize,
+        session: &str,
+    ) -> Result<Vec<Entry>, StoreError> {
         let needle = pattern.to_lowercase();
-        let mut hits: Vec<Entry> = self.list_entries()?.into_iter()
+        let mut hits: Vec<Entry> = self
+            .list_entries()?
+            .into_iter()
             .filter(|e| e.text.to_lowercase().contains(&needle))
             .collect();
-        hits.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        hits.sort_by_key(|e| std::cmp::Reverse(e.created_at));
         hits.truncate(limit.max(1));
         self.audit("recalled", "", "", "", "", "ok", "query", session)?;
         Ok(hits)
@@ -238,7 +315,12 @@ impl Store {
 
     /// One snapshot body per session: the caller freezes it.
     pub fn snapshot(&self, workspace_key: &str, agent_key: &str) -> Result<String, StoreError> {
-        Ok(crate::snapshot::render_snapshot(&self.list_entries()?, &self.budgets, workspace_key, agent_key))
+        Ok(crate::snapshot::render_snapshot(
+            &self.list_entries()?,
+            &self.budgets,
+            workspace_key,
+            agent_key,
+        ))
     }
 
     /// Import from a dsh-memento database; idempotent by id.
@@ -250,16 +332,28 @@ impl Store {
         let mut stmt = src.prepare("select id,track,scope,workspace_key,agent_key,text,tags,source,created_at from entries")?;
         let rows = stmt.query_map([], |r| {
             Ok(Entry {
-                id: r.get(0)?, track: r.get(1)?, scope: r.get(2)?, workspace_key: r.get(3)?,
-                agent_key: r.get(4)?, text: r.get(5)?,
+                id: r.get(0)?,
+                track: r.get(1)?,
+                scope: r.get(2)?,
+                workspace_key: r.get(3)?,
+                agent_key: r.get(4)?,
+                text: r.get(5)?,
                 tags: serde_json::from_str(&r.get::<_, String>(6)?).unwrap_or_default(),
-                source: r.get(7)?, created_at: r.get(8)?,
+                source: r.get(7)?,
+                created_at: r.get(8)?,
             })
         })?;
         let mut imported = 0;
         for row in rows {
             let e = row?;
-            let exists: Option<String> = self.conn.query_row("select id from entries where id=?1", rusqlite::params![e.id], |r| r.get(0)).optional()?;
+            let exists: Option<String> = self
+                .conn
+                .query_row(
+                    "select id from entries where id=?1",
+                    rusqlite::params![e.id],
+                    |r| r.get(0),
+                )
+                .optional()?;
             if exists.is_some() {
                 continue;
             }
@@ -267,7 +361,16 @@ impl Store {
                 "insert into entries (id,track,scope,workspace_key,agent_key,text,tags,source,created_at) values (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
                 rusqlite::params![e.id, e.track, e.scope, e.workspace_key, e.agent_key, e.text, serde_json::to_string(&e.tags).unwrap_or_else(|_| "[]".into()), e.source, e.created_at],
             )?;
-            self.audit("import", &e.track, &e.scope, &e.id, &e.text, "imported from dsh-memento", "migration", "")?;
+            self.audit(
+                "import",
+                &e.track,
+                &e.scope,
+                &e.id,
+                &e.text,
+                "imported from dsh-memento",
+                "migration",
+                "",
+            )?;
             imported += 1;
         }
         Ok(imported)
