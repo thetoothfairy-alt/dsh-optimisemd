@@ -28,7 +28,7 @@ enum Cmd {
     Export,
     /// Rebuild the ranked finder index (delegates to the workspace's finder).
     Index,
-    /// Tier-0 maintenance, the replacement for memento-maintenance.sh: list, add, replace, remove, query.
+    /// Tier-0 maintenance, the replacement for memento-maintenance.sh: list, add, replace, remove, query, verify.
     Tier0(Tier0Args),
 }
 
@@ -44,7 +44,13 @@ enum Tier0Cmd {
     Add(AddArgs),
     Replace(ReplaceArgs),
     Remove(RemoveArgs),
-    Query { text: String },
+    Query {
+        text: String,
+    },
+    Verify {
+        #[arg(long)]
+        report_only: bool,
+    },
 }
 
 #[derive(Args)]
@@ -171,7 +177,7 @@ fn promote(root: &Path, a: PromoteArgs) -> Result<i32, Box<dyn std::error::Error
     Ok(0)
 }
 
-fn tier0(_root: &Path, args: Tier0Args) -> Result<i32, Box<dyn std::error::Error>> {
+fn tier0(root: &Path, args: Tier0Args) -> Result<i32, Box<dyn std::error::Error>> {
     let path = match args.cmd {
         Tier0Cmd::Add(_) => store_path_write(),
         _ => store_path_read(),
@@ -214,22 +220,114 @@ fn tier0(_root: &Path, args: Tier0Args) -> Result<i32, Box<dyn std::error::Error
                 .collect();
             let id = store.add(&a.track, &a.scope, &a.text, &tags, &a.source, "", "", "")?;
             println!("added {id}");
+            refresh(root);
         }
         Tier0Cmd::Replace(r) => {
             let e = store.replace(&r.match_, &r.text, "")?;
             println!("replaced {}", e.id);
+            refresh(root);
         }
         Tier0Cmd::Remove(r) => {
             let e = store.remove(&r.match_, "")?;
             println!("removed {}", e.id);
+            refresh(root);
         }
         Tier0Cmd::Query { text } => {
             for e in store.query(&text, 20, "")? {
                 println!("  [{}/{}] {}", e.track, e.scope, e.text);
             }
         }
+        Tier0Cmd::Verify { report_only } => {
+            return verify(root, &store, report_only);
+        }
     }
     Ok(0)
+}
+
+/// The one-writer checks, ported from check-memento.sh: budgets, an agent-track entry that re-tells a MEMORY.md row, an
+/// agent-track fact with no repo pointer, and the export's row count against the store.
+fn verify(
+    root: &Path,
+    store: &Store,
+    report_only: bool,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    let mut findings: Vec<String> = Vec::new();
+    let user = store.usage("user", "user-global")?;
+    let agent = store.usage("agent", "workspace")?;
+    let user_cap = store.cap("user");
+    let agent_cap = store.cap("agent");
+    if user > user_cap || agent > agent_cap {
+        findings.push(format!("[1] budget: user {user}/{user_cap}, agent {agent}/{agent_cap} — the store is over its cap"));
+    } else if user * 100 / user_cap.max(1) >= 80 || agent * 100 / agent_cap.max(1) >= 80 {
+        eprintln!("warn: budget user {user}/{user_cap}, agent {agent}/{agent_cap} (past 80%)");
+    }
+    let memory = std::fs::read_to_string(root.join("MEMORY.md")).unwrap_or_default();
+    let rows = optimisemd_core::promo::parse_rows(&memory);
+    let stop: [&str; 12] = [
+        "that", "this", "with", "from", "they", "have", "when", "what", "were", "will", "into",
+        "your",
+    ];
+    let words = |t: &str| -> Vec<String> {
+        t.split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() >= 4)
+            .map(|w| w.to_lowercase())
+            .filter(|w| !stop.contains(&w.as_str()))
+            .collect()
+    };
+    let entries = store.list_entries()?;
+    for e in &entries {
+        if e.track != "agent" {
+            continue;
+        }
+        let ew = words(&e.text);
+        let is_pointer = e.tags.iter().any(|t| t == "pointer") && e.text.chars().count() < 250;
+        if !is_pointer {
+            for row in &rows {
+                let shared: Vec<&String> =
+                    ew.iter().filter(|w| words(&row.text).contains(w)).collect();
+                if shared.len() >= 2 {
+                    findings.push(format!(
+                        "[2] agent/{}: entry re-tells a MEMORY.md row ({:?}) — keep only a pointer",
+                        e.scope, shared
+                    ));
+                    break;
+                }
+            }
+            let names_repo = ["docs/", "skills/", "plugins/"]
+                .iter()
+                .any(|p| e.text.contains(p));
+            if !names_repo {
+                findings.push(format!(
+                    "[3] agent/{}: an agent-track fact with no docs/, skills/ or plugins/ pointer",
+                    e.scope
+                ));
+            }
+        }
+    }
+    let export =
+        std::fs::read_to_string(root.join("memory/logs/memento-export.md")).unwrap_or_default();
+    let exported = export.lines().filter(|l| l.starts_with("- ")).count();
+    if exported != entries.len() {
+        findings.push(format!("[4] the find export lists {exported} of {} stored entries — run: dsh-optimisemd export", entries.len()));
+    }
+    for f in &findings {
+        println!("{f}");
+    }
+    println!(
+        "memento: {} entries · 2 track/scope pairs · findings {}",
+        entries.len(),
+        findings.len()
+    );
+    println!("user/user-global: {user}/{user_cap} chars");
+    println!("agent/workspace: {agent}/{agent_cap} chars");
+    if report_only && !findings.is_empty() {
+        println!(
+            "(report-only: {} finding(s) — a known backlog, not a new regression)",
+            findings.len()
+        );
+        return Ok(0);
+    }
+    Ok(if findings.is_empty() { 0 } else { 1 })
 }
 
 fn check(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
@@ -288,36 +386,16 @@ fn store_path_read() -> Option<PathBuf> {
 
 /// Export the tier-0 store the way the finder reads it: a row-store document with both tracks and full text.
 fn export(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
-    let Some(src) = store_path_read() else {
+    let n = export_inner(root)?;
+    if n == 0 {
         eprintln!("export: no tier-0 store found (DSH_HOME not set and no ~/.dsh store)");
         return Ok(2);
-    };
-    let tmp = std::env::temp_dir().join(format!("optimisemd-export-{}.db", std::process::id()));
-    std::fs::copy(&src, &tmp)?;
-    for suffix in ["-wal", "-shm"] {
-        let side = PathBuf::from(format!("{}{}", src.display(), suffix));
-        if side.exists() {
-            let _ = std::fs::copy(&side, PathBuf::from(format!("{}{}", tmp.display(), suffix)));
-        }
     }
-    let store = Store::open(&tmp, Default::default())?;
-    let entries = store.list_entries()?;
-    let out = root.join("memory/logs/memento-export.md");
-    std::fs::create_dir_all(out.parent().unwrap_or(Path::new(".")))?;
-    let mut body = String::from("# The plugin memory store (tier 0), exported for the index\n\nGenerated by `dsh-optimisemd export` from a read-only copy of the store, with the FULL text of every entry. Both tracks are included.\n\n");
-    for e in &entries {
-        body.push_str(&format!(
-            "- **{}/{}** {:?} ({}): {}\n",
-            e.track,
-            e.scope,
-            e.tags,
-            e.source,
-            e.text.trim()
-        ));
-    }
-    std::fs::write(&out, body)?;
-    println!("wrote {}: {} entries", out.display(), entries.len());
-    let _ = std::fs::remove_file(&tmp);
+    println!(
+        "wrote {}: {} entries",
+        root.join("memory/logs/memento-export.md").display(),
+        n
+    );
     Ok(0)
 }
 
@@ -333,4 +411,48 @@ fn index(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
         .current_dir(root)
         .status()?;
     Ok(status.code().unwrap_or(1))
+}
+
+/// A store write is only useful once the finder can see it: refresh the export and the index the way the nightly does.
+fn refresh(root: &Path) {
+    let _ = export_inner(root);
+    let _ = Command::new("bash")
+        .arg(root.join("scripts/find.sh"))
+        .arg("--reindex")
+        .current_dir(root)
+        .status();
+}
+
+fn export_inner(root: &Path) -> Result<usize, Box<dyn std::error::Error>> {
+    let Some(src) = store_path_read() else {
+        return Ok(0);
+    };
+    let tmp = std::env::temp_dir().join(format!("optimisemd-export-{}.db", std::process::id()));
+    std::fs::copy(&src, &tmp)?;
+    for suffix in ["-wal", "-shm"] {
+        let side = PathBuf::from(format!("{}{}", src.display(), suffix));
+        if side.exists() {
+            let _ = std::fs::copy(&side, PathBuf::from(format!("{}{}", tmp.display(), suffix)));
+        }
+    }
+    let store = Store::open(&tmp, Default::default())?;
+    let entries = store.list_entries()?;
+    let out = root.join("memory/logs/memento-export.md");
+    std::fs::create_dir_all(out.parent().unwrap_or(Path::new(".")))?;
+    let mut body = String::from(
+        "# The plugin memory store (tier 0), exported for the index\n\nGenerated by `dsh-optimisemd export` from a read-only copy of the store, with the FULL text of every entry. Both tracks are included.\n\n",
+    );
+    for e in &entries {
+        body.push_str(&format!(
+            "- **{}/{}** {:?} ({}): {}\n",
+            e.track,
+            e.scope,
+            e.tags,
+            e.source,
+            e.text.trim()
+        ));
+    }
+    std::fs::write(&out, body)?;
+    let _ = std::fs::remove_file(&tmp);
+    Ok(entries.len())
 }

@@ -10,7 +10,7 @@ pub fn visible_entries<'a>(
     entries
         .iter()
         .filter(|e| {
-            (e.agent_key.is_empty() || e.agent_key == agent_key)
+            (agent_key.is_empty() || e.agent_key.is_empty() || e.agent_key == agent_key)
                 && (e.scope == "user-global"
                     || (e.scope == "workspace" && e.workspace_key == workspace_key))
         })
@@ -108,6 +108,16 @@ mod tests {
         let visible = visible_entries(&entries, "ws", "preset-b");
         let ids: Vec<&str> = visible.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, vec!["1", "2"]);
+    }
+
+    #[test]
+    fn an_empty_agent_key_sees_every_agent_layer() {
+        let entries = vec![
+            entry("1", "user", "user-global", "pref", "ws", "standard"),
+            entry("2", "agent", "workspace", "here", "ws", "standard"),
+        ];
+        let visible = visible_entries(&entries, "ws", "");
+        assert_eq!(visible.len(), 2);
     }
 
     #[test]

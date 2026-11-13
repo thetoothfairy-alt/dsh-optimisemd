@@ -15,6 +15,19 @@ platform.
 | `memory` | tier 0, the capped store (`add`/`replace`/`remove`/`query`) | preferences and the workspace pointer |
 | `memory_save` | **the repository** — a dated `MEMORY.md` row (≤200 chars), optionally its `docs/memory-details` section, and the `memory/<date>.md` line | facts; refuses duplicates, over-long rows and pointers that are not a part/runbook/skill/landmine index |
 
+## Command line
+
+The same crate ships `dsh-optimisemd`, the binary the workspace's nightlies call:
+
+```
+dsh-optimisemd promote            # demote + promote candidates (report)
+dsh-optimisemd promote --apply    # move quiet rows into their part, with the check as the gate
+dsh-optimisemd tier0 list|add|replace|remove|query|verify
+dsh-optimisemd check              # the workspace's index check
+dsh-optimisemd export             # memory/logs/memento-export.md from a read-only store copy
+dsh-optimisemd index              # refresh the ranked finder
+```
+
 ## Architecture
 
 ```
@@ -40,7 +53,7 @@ repository). On macOS, or when no prebuilt matches, the package's `prepare` buil
 
 ```sh
 cd ~/.dsh/profiles/web
-dsh plugin --profile web add github:thetoothfairy-alt/dsh-optimisemd#v0.1.1
+dsh plugin --profile web add github:thetoothfairy-alt/dsh-optimisemd#v0.2.0
 ```
 
 `dsh` prints the exact `allowBuilds` key to paste into the profile's `pnpm-workspace.yaml` the first time (pnpm blocks
