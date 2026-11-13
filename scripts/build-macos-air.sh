@@ -14,7 +14,7 @@ HOST="${AIR_HOST:-macbook-air}"
 DEST="${2:-native/dsh-optimisemd.darwin-arm64.node}"
 # Build paths end up in panic/debug strings. Remap the Air's home (and the cargo registry under it) to /build so the
 # published addon does not carry the owner's macOS username.
-ssh "$HOST" "rm -rf ~/dsh-optimisemd-build && git clone -q --depth 1 --branch '$TAG' https://github.com/thetoothfairy-alt/dsh-optimisemd.git ~/dsh-optimisemd-build && cd ~/dsh-optimisemd-build && RUSTFLAGS=\"--remap-path-prefix=\$HOME=/build\" bash scripts/build-native.sh"
+ssh "$HOST" "rm -rf ~/dsh-optimisemd-build && git clone -q --depth 1 --branch '$TAG' https://github.com/thetoothfairy-alt/dsh-optimisemd.git ~/dsh-optimisemd-build && cd ~/dsh-optimisemd-build && RUSTFLAGS=\"--remap-path-prefix=\$HOME=/build\" bash scripts/build-native.sh && install_name_tool -id @rpath/dsh-optimisemd.node native/dsh-optimisemd.darwin-arm64.node && codesign --force --sign - native/dsh-optimisemd.darwin-arm64.node"
 mkdir -p "$(dirname "$DEST")"
 scp -q "$HOST:~/dsh-optimisemd-build/native/dsh-optimisemd.darwin-arm64.node" "$DEST"
 file "$DEST"
