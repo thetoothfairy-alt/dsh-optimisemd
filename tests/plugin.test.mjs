@@ -29,7 +29,7 @@ test('the tool executes against the store and refuses empty text', async () => {
     assert.equal(bad.ok, false)
     assert.match(bad.error, /empty/)
     const found = await executeMemoryAction(store, { action: 'query', text: 'plain' }, exec)
-    assert.equal(found.hits.length, 1)
+    assert.equal(found.entries.length, 1)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

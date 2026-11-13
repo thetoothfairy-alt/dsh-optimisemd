@@ -6,7 +6,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import Schema from '@deepseek-ai/schemastery'
 import { dbPathOf, loadNative } from './lib/native.mjs'
-import { MEMORY_DESCRIPTION, MEMORY_PARAMETERS, executeMemoryAction } from './lib/action.mjs'
+import { MEMORY_DESCRIPTION, MEMORY_OUTPUT_SCHEMA, MEMORY_PARAMETERS, executeMemoryAction, renderMemoryResult } from './lib/action.mjs'
 
 export const name = 'memory'
 export const inject = ['tools', 'systemPrompt']
@@ -26,6 +26,7 @@ export function makeMemoryTool(store) {
     name: 'memory',
     description: MEMORY_DESCRIPTION,
     parameters: MEMORY_PARAMETERS,
+    output: { schema: MEMORY_OUTPUT_SCHEMA, render: renderMemoryResult },
     execute: (args, exec) => executeMemoryAction(store, args, exec),
   })
 }

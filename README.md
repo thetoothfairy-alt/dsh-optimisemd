@@ -41,14 +41,14 @@ dsh plugin --profile web add link:/path/to/dsh-memory
 bash scripts/build-native.sh
 ```
 
-Mount it in the profile's `cordis.patch.yml` (a bundle deliberately does not auto-mount):
+`dsh plugin add` also appends the package to the profile's `dsh.profile.bundles`, and its own
+`cordis.patch.yml` mounts the row; verify with `dsh --profile <name> --dump-config | grep -A3 'id: memory'`.
+Per-profile overrides (for example a different database file) go in the profile's `cordis.patch.yml`:
 
 ```yaml
-- insert:
-    - id: memory
-      name: dsh-memory
-      config:
-        snapshotOrder: -50
+- id: memory
+  config:
+    dbPath: /tmp/scratch-memory.db
 ```
 
 ## Build and test
