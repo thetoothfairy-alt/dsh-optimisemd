@@ -183,7 +183,9 @@ pub struct RepoWriter {
 impl RepoWriter {
     #[napi(constructor)]
     pub fn new(root: String) -> Self {
-        Self { inner: Repo::new(root) }
+        Self {
+            inner: Repo::new(root),
+        }
     }
 
     // The tool exposes one create call; the store's fields are its arguments.
@@ -211,7 +213,43 @@ impl RepoWriter {
                 detail.as_deref(),
             )
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        Ok(Written { row: w.row, part: w.part, day: w.day })
+        Ok(Written {
+            row: w.row,
+            part: w.part,
+            day: w.day,
+        })
+    }
+
+    /// The gated variant the tool uses: the workspace check runs after the write and the save is rolled back if it fails.
+    #[allow(clippy::too_many_arguments)]
+    #[napi]
+    pub fn save_checked(
+        &self,
+        text: String,
+        date: String,
+        pointer: String,
+        section: Option<String>,
+        part: Option<String>,
+        slug: Option<String>,
+        detail: Option<String>,
+    ) -> napi::Result<Written> {
+        let w = self
+            .inner
+            .save_checked(
+                &text,
+                &date,
+                &pointer,
+                section.as_deref(),
+                part.as_deref(),
+                slug.as_deref(),
+                detail.as_deref(),
+            )
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        Ok(Written {
+            row: w.row,
+            part: w.part,
+            day: w.day,
+        })
     }
 
     #[napi]

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/optimisemd-core", "crates/optimisemd-node"]
+members = ["crates/optimisemd-core", "crates/optimisemd-node", "crates/optimisemd-cli"]
 resolver = "2"
 
 [workspace.package]
