@@ -1,6 +1,6 @@
 {
   "name": "dsh-optimisemd",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Tier-0 memory for DSH \u2014 a Rust store (native addon) behind the memory tool and the frozen session snapshot.",
   "type": "module",
   "main": "./index.mjs",

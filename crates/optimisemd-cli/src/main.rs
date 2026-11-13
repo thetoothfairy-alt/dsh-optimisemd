@@ -51,6 +51,26 @@ enum Tier0Cmd {
         #[arg(long)]
         report_only: bool,
     },
+    Merge(MergeArgs),
+    /// Import entries from a legacy dsh-memento database into the plugin's own store.
+    Import {
+        #[arg(long)]
+        from: String,
+    },
+}
+
+#[derive(Args)]
+struct MergeArgs {
+    #[arg(long)]
+    text: String,
+    #[arg(long, default_value = "")]
+    tags: String,
+    #[arg(long = "match", required = true)]
+    matches: Vec<String>,
+    #[arg(long, default_value = "user")]
+    track: String,
+    #[arg(long, default_value = "user-global")]
+    scope: String,
 }
 
 #[derive(Args)]
@@ -87,6 +107,9 @@ struct PromoteArgs {
     days: u32,
     #[arg(long)]
     apply: bool,
+    /// With --apply: show what would move and write nothing.
+    #[arg(long)]
+    dry_run: bool,
     #[arg(long)]
     json: bool,
 }
@@ -140,7 +163,7 @@ fn promote(root: &Path, a: PromoteArgs) -> Result<i32, Box<dyn std::error::Error
         return Ok(0);
     }
     // apply, then the checks gate: a failed check restores the backup and exits 1.
-    let report = promoter.apply(a.days, false)?;
+    let report = promoter.apply(a.days, a.dry_run)?;
     if a.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -179,7 +202,7 @@ fn promote(root: &Path, a: PromoteArgs) -> Result<i32, Box<dyn std::error::Error
 
 fn tier0(root: &Path, args: Tier0Args) -> Result<i32, Box<dyn std::error::Error>> {
     let path = match args.cmd {
-        Tier0Cmd::Add(_) => store_path_write(),
+        Tier0Cmd::Add(_) | Tier0Cmd::Merge(_) | Tier0Cmd::Import { .. } => store_path_write(),
         _ => store_path_read(),
     };
     let Some(path) = path else {
@@ -239,6 +262,22 @@ fn tier0(root: &Path, args: Tier0Args) -> Result<i32, Box<dyn std::error::Error>
         }
         Tier0Cmd::Verify { report_only } => {
             return verify(root, &store, report_only);
+        }
+        Tier0Cmd::Import { from } => {
+            let n = store.import_from_memento(std::path::Path::new(&from))?;
+            println!("imported {n} entries from {from}");
+            refresh(root);
+        }
+        Tier0Cmd::Merge(m) => {
+            let tags: Vec<String> = m
+                .tags
+                .split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+            let id = store.merge(&m.matches, &m.track, &m.scope, &m.text, &tags, "cli")?;
+            println!("merged {} entr(ies) into {id}", m.matches.len());
+            refresh(root);
         }
     }
     Ok(0)

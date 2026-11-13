@@ -313,6 +313,93 @@ impl Store {
         Ok(hits)
     }
 
+    /// Consolidate several entries into one (the old maintenance script's `merge`): every match must name exactly one
+    /// entry, the survivors are deleted, the replacement is inserted, and the audit records the whole move.
+    pub fn merge(
+        &self,
+        matches: &[String],
+        track: &str,
+        scope: &str,
+        text: &str,
+        tags: &[String],
+        source: &str,
+    ) -> Result<String, StoreError> {
+        if matches.is_empty() {
+            return Err(StoreError::Invalid(
+                "merge needs at least one --match".into(),
+            ));
+        }
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(StoreError::Invalid(
+                "merge needs --text (the one entry that survives)".into(),
+            ));
+        }
+        let all = self.list_entries()?;
+        let mut victims = Vec::new();
+        for m in matches {
+            // Match only inside the destination track/scope, as the old maintenance merge did.
+            let hits: Vec<&Entry> = all
+                .iter()
+                .filter(|e| e.track == track && e.scope == scope && e.text.contains(m.as_str()))
+                .collect();
+            match hits.len() {
+                0 => return Err(StoreError::NotFound(m.clone())),
+                1 => {
+                    let hit = hits[0];
+                    if victims.iter().any(|v: &&Entry| v.id == hit.id) {
+                        return Err(StoreError::Invalid(format!(
+                            "{m:?} resolves to the same entry as another match"
+                        )));
+                    }
+                    victims.push(hit);
+                }
+                n => return Err(StoreError::Ambiguous(n)),
+            }
+        }
+        let after = self.usage(track, scope)? + text.chars().count();
+        let cap = self.cap(track);
+        if after > cap {
+            return Err(StoreError::Budget {
+                track: track.into(),
+                scope: scope.into(),
+                after,
+                cap,
+            });
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".into());
+        for v in &victims {
+            self.conn
+                .execute("delete from entries where id=?1", rusqlite::params![v.id])?;
+            self.audit(
+                "remove",
+                &v.track,
+                &v.scope,
+                &v.id,
+                &v.text,
+                "consolidated",
+                source,
+                "",
+            )?;
+        }
+        self.conn.execute(
+            "insert into entries (id,track,scope,workspace_key,agent_key,text,tags,source,created_at) values (?1,?2,?3,'','',?4,?5,?6,?7)",
+            rusqlite::params![id, track, scope, text, tags_json, source, Self::now_ms()],
+        )?;
+        self.audit(
+            "consolidate",
+            track,
+            scope,
+            &id,
+            text,
+            "applied",
+            source,
+            "",
+        )?;
+        Ok(id)
+    }
+
     /// One snapshot body per session: the caller freezes it.
     pub fn snapshot(&self, workspace_key: &str, agent_key: &str) -> Result<String, StoreError> {
         Ok(crate::snapshot::render_snapshot(
@@ -374,5 +461,93 @@ impl Store {
             imported += 1;
         }
         Ok(imported)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn merge_replaces_the_matches_inside_one_track_and_refuses_ambiguity() {
+        let dir = std::env::temp_dir().join(format!("optimisemd-merge-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let store = Store::open(&dir.join("m.db"), Budgets::default()).unwrap();
+        store
+            .add(
+                "user",
+                "user-global",
+                "Prefer short answers.",
+                &[],
+                "test",
+                "",
+                "",
+                "",
+            )
+            .unwrap();
+        store
+            .add(
+                "user",
+                "user-global",
+                "Prefer plain words.",
+                &[],
+                "test",
+                "",
+                "",
+                "",
+            )
+            .unwrap();
+        store
+            .add(
+                "agent",
+                "workspace",
+                "A fact that mentions Prefer.",
+                &[],
+                "test",
+                "",
+                "",
+                "",
+            )
+            .unwrap();
+        // the match only counts inside the destination track/scope, as the old merge did
+        store
+            .merge(
+                &["Prefer short".into()],
+                "user",
+                "user-global",
+                "Prefer short, plain answers.",
+                &[],
+                "test",
+            )
+            .unwrap();
+        let texts: Vec<String> = store
+            .list_entries()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.text)
+            .collect();
+        assert!(texts.contains(&"Prefer short, plain answers.".to_string()));
+        assert!(!texts.contains(&"Prefer short answers.".to_string()));
+        assert!(texts.contains(&"A fact that mentions Prefer.".to_string()));
+        // "Prefer" now matches one user row and the agent row — but only the user row is in scope
+        store
+            .merge(
+                &["Prefer".into()],
+                "agent",
+                "workspace",
+                "A fact.",
+                &[],
+                "test",
+            )
+            .unwrap();
+        let texts: Vec<String> = store
+            .list_entries()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.text)
+            .collect();
+        assert!(texts.contains(&"A fact.".to_string()));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

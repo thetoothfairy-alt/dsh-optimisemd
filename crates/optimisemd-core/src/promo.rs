@@ -266,11 +266,20 @@ impl Promoter {
                 part.push_str(&format!("\n{DEMOTED_HEADING}\n\n{DEMOTED_PARAGRAPH}\n"));
             }
             let old_line = format!("- **{}** ({}) — `{}`", row.text, row.date, row.pointer);
-            let moved = format!("- **{}** — demoted {today} from `MEMORY.md` (row dated {}); the fact lives in this part.", row.text, row.date);
+            let moved = format!(
+                "- **{}** — demoted {today} from `MEMORY.md` (row dated {}); the fact lives here.",
+                row.text, row.date
+            );
             part.push_str(&moved);
             part.push('\n');
             fs::write(&part_path, part)?;
-            body = body.replace(&old_line, "");
+            // Remove the line with its newline; replacing the text alone leaves a blank line where the row was.
+            let with_newline = format!("{old_line}\n");
+            if body.contains(&with_newline) {
+                body = body.replace(&with_newline, "");
+            } else {
+                body = body.replace(&old_line, "");
+            }
             report.applied.push(format!("{part_rel}: {moved}"));
         }
         // collapse doubled blank lines left behind, then write the index
@@ -289,7 +298,8 @@ impl Promoter {
             out.push_str(l);
             out.push('\n');
         }
-        fs::write(self.root.join("MEMORY.md"), out)?;
+        let trimmed = out.trim_end().to_string() + "\n";
+        fs::write(self.root.join("MEMORY.md"), trimmed)?;
         report.backup = Some(backup.display().to_string());
         Ok(report)
     }
