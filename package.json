@@ -16,7 +16,9 @@
     "index.mjs",
     "index.d.ts",
     "cordis.patch.yml",
+    "lib",
     "native",
+    "scripts",
     "README.md",
     "LICENSE"
   ],
