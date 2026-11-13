@@ -12,4 +12,5 @@ path = "src/main.rs"
 optimisemd-core = { path = "../optimisemd-core" }
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
+regex = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }

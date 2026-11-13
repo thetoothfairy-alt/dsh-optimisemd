@@ -27,6 +27,12 @@ dsh-optimisemd check              # the workspace's index check
 dsh-optimisemd export             # memory/logs/memento-export.md from a read-only store copy
 dsh-optimisemd index              # refresh the ranked finder
 dsh-optimisemd slim               # markdown slimming report (budgets parsed from the workspace guard)
+dsh-optimisemd session-index      # docs/session-index.md; --check fails when stale
+dsh-optimisemd session-commits    # docs/session-commits.md over --days
+dsh-optimisemd session-digest     # memory/logs/session-digest.md
+dsh-optimisemd log-index          # docs/memory-log-index.md
+dsh-optimisemd landmine add …     # one hard-won line + its reproduction, guard as the gate
+dsh-optimisemd check [paths…]     # the MEMORY.md index rules (the bash gate wraps this)
 ```
 
 ## Architecture
@@ -54,7 +60,7 @@ repository). On macOS, or when no prebuilt matches, the package's `prepare` buil
 
 ```sh
 cd ~/.dsh/profiles/web
-dsh plugin --profile web add github:thetoothfairy-alt/dsh-optimisemd#v0.3.0
+dsh plugin --profile web add github:thetoothfairy-alt/dsh-optimisemd#v0.4.0
 ```
 
 `dsh` prints the exact `allowBuilds` key to paste into the profile's `pnpm-workspace.yaml` the first time (pnpm blocks

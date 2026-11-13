@@ -6,6 +6,9 @@ use optimisemd_core::{Promoter, Store};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod landmine;
+mod memindex;
+mod reports;
 mod slim;
 
 #[derive(Parser)]
@@ -24,14 +27,33 @@ struct Cli {
 enum Cmd {
     /// Report demote candidates and promote candidates; apply the demotions with --apply.
     Promote(PromoteArgs),
-    /// Run the workspace's index check (the same bash checker every commit runs).
-    Check,
+    /// Check the memory indexes (MEMORY.md and docs/lesson-details.md unless paths are given).
+    Check {
+        /// Files to check; empty means the workspace default.
+        targets: Vec<String>,
+    },
     /// Write memory/logs/memento-export.md from a read-only copy of the tier-0 store.
     Export,
     /// Rebuild the ranked finder index (delegates to the workspace's finder).
     Index,
     /// Measure the always-read markdown surface against a baseline commit (writes docs/md-slimming-report.md).
     Slim(SlimCliArgs),
+    /// Rebuild docs/session-index.md (every session, newest first); --check fails when the file is stale.
+    SessionIndex {
+        #[arg(long)]
+        check: bool,
+    },
+    /// Rebuild docs/session-commits.md over the last --days.
+    SessionCommits {
+        #[arg(long, default_value_t = 30)]
+        days: u32,
+    },
+    /// Rebuild memory/logs/session-digest.md (one row per session, what it was asked).
+    SessionDigest,
+    /// Rebuild docs/memory-log-index.md (the daily logs' topics).
+    LogIndex,
+    /// Record a landmine: one line in its part, its reproduction under §slug, the context guard as the gate.
+    Landmine(LandmineArgs),
     /// Tier-0 maintenance, the replacement for memento-maintenance.sh: list, add, replace, remove, query, verify.
     Tier0(Tier0Args),
 }
@@ -60,6 +82,28 @@ enum Tier0Cmd {
     Import {
         #[arg(long)]
         from: String,
+    },
+}
+
+#[derive(Args)]
+struct LandmineArgs {
+    #[command(subcommand)]
+    cmd: LandmineCmd,
+}
+
+#[derive(Subcommand)]
+enum LandmineCmd {
+    Add {
+        #[arg(long)]
+        part: String,
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        context: String,
+        #[arg(long)]
+        slug: String,
+        #[arg(long)]
+        detail: String,
     },
 }
 
@@ -140,7 +184,7 @@ fn main() {
 fn run(root: &Path, cmd: Cmd) -> Result<i32, Box<dyn std::error::Error>> {
     match cmd {
         Cmd::Promote(a) => promote(root, a),
-        Cmd::Check => check(root),
+        Cmd::Check { targets } => memindex::run(root, targets),
         Cmd::Export => export(root),
         Cmd::Index => index(root),
         Cmd::Slim(a) => slim::run(
@@ -149,6 +193,16 @@ fn run(root: &Path, cmd: Cmd) -> Result<i32, Box<dyn std::error::Error>> {
                 baseline: a.baseline.as_deref(),
             },
         ),
+        Cmd::SessionIndex { check } => reports::session_index(root, check),
+        Cmd::SessionCommits { days } => reports::session_commits(root, &days.to_string()),
+        Cmd::SessionDigest => reports::session_digest(root),
+        Cmd::LogIndex => reports::memory_log_index(root),
+        Cmd::Landmine(a) => match a.cmd {
+            LandmineCmd::Add { part, text, context, slug, detail } => landmine::add(
+                root,
+                landmine::AddArgs { part: &part, text: &text, context: &context, slug: &slug, detail: &detail },
+            ),
+        },
         Cmd::Tier0(t) => tier0(root, t),
     }
 }
