@@ -27,9 +27,9 @@ changes the prompt prefix.
 
 ## Install
 
-From a tag (the release attaches the linux-x64 and win32-x64 addons; the darwin-arm64 addon is built on the owner's MacBook
-Air and attached to the same release — see `scripts/build-macos-air.sh`). On macOS, or when no prebuilt matches, the
-package's `prepare` builds the addon from source:
+From a tag (the release attaches the linux-x64 and win32-x64 addons; the darwin-arm64 addon is built on a Mac and attached
+to the same release — `scripts/build-macos-air.sh` needs `AIR_HOST` set to its ssh alias, which is deliberately not in this
+repository). On macOS, or when no prebuilt matches, the package's `prepare` builds the addon from source:
 
 ```sh
 cd ~/.dsh/profiles/web
