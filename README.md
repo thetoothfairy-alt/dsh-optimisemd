@@ -8,6 +8,13 @@ This is a redesign of a script-based memory set (promotion, demotion, creation, 
 plugin package. The package is versioned in GitHub; CI tests it and releases prebuilt addons per
 platform.
 
+## Tools
+
+| Tool | Writes | When |
+|---|---|---|
+| `memory` | tier 0, the capped store (`add`/`replace`/`remove`/`query`) | preferences and the workspace pointer |
+| `memory_save` | **the repository** — a dated `MEMORY.md` row (≤200 chars), optionally its `docs/memory-details` section, and the `memory/<date>.md` line | facts; refuses duplicates, over-long rows and pointers that are not a part/runbook/skill/landmine index |
+
 ## Architecture
 
 ```

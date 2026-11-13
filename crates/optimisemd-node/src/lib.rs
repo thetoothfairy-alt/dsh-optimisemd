@@ -2,7 +2,7 @@
 //! no threads: the store is a local SQLite file and the calls are microseconds.
 
 use napi_derive::napi;
-use optimisemd_core::{Budgets, Entry, Store};
+use optimisemd_core::{Budgets, Entry, Repo, Store};
 use std::path::Path;
 
 #[napi(object)]
@@ -162,5 +162,63 @@ impl MemoryStore {
             .inner
             .import_from_memento(Path::new(&path))
             .map_err(fail)? as u32)
+    }
+}
+
+#[napi(object)]
+pub struct Written {
+    pub row: String,
+    pub part: Option<String>,
+    pub day: Option<String>,
+}
+
+/// The repo stores: MEMORY.md rows, detail-part sections and the day's line. This is P2 — one call creates a fact in the
+/// repository instead of an edit plus three checks.
+#[napi]
+pub struct RepoWriter {
+    inner: Repo,
+}
+
+#[napi]
+impl RepoWriter {
+    #[napi(constructor)]
+    pub fn new(root: String) -> Self {
+        Self { inner: Repo::new(root) }
+    }
+
+    // The tool exposes one create call; the store's fields are its arguments.
+    #[allow(clippy::too_many_arguments)]
+    #[napi]
+    pub fn save(
+        &self,
+        text: String,
+        date: String,
+        pointer: String,
+        section: Option<String>,
+        part: Option<String>,
+        slug: Option<String>,
+        detail: Option<String>,
+    ) -> napi::Result<Written> {
+        let w = self
+            .inner
+            .save(
+                &text,
+                &date,
+                &pointer,
+                section.as_deref(),
+                part.as_deref(),
+                slug.as_deref(),
+                detail.as_deref(),
+            )
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        Ok(Written { row: w.row, part: w.part, day: w.day })
+    }
+
+    #[napi]
+    pub fn append_day(&self, date: String, text: String) -> napi::Result<String> {
+        self.inner
+            .append_day(&date, &text)
+            .map(|p| p.display().to_string())
+            .map_err(|e| napi::Error::from_reason(e.to_string()))
     }
 }

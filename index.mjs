@@ -7,6 +7,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import Schema from '@deepseek-ai/schemastery'
 import { dbPathOf, loadNative } from './lib/native.mjs'
 import { MEMORY_DESCRIPTION, MEMORY_OUTPUT_SCHEMA, MEMORY_PARAMETERS, executeMemoryAction, renderMemoryResult } from './lib/action.mjs'
+import { SAVE_DESCRIPTION, SAVE_OUTPUT_SCHEMA, SAVE_PARAMETERS, executeRepoAction, renderRepoResult } from './lib/repo-action.mjs'
 
 export const name = 'memory'
 export const inject = ['tools', 'systemPrompt']
@@ -20,6 +21,16 @@ export const Config = Schema.object({
   agentCap: Schema.number().default(DEFAULT_BUDGETS.agent).description('Characters for agent/workspace'),
   snapshotOrder: Schema.number().default(DEFAULT_SNAPSHOT_ORDER).description('systemPrompt section order'),
 })
+
+export function makeSaveTool(RepoWriter) {
+  return defineTool({
+    name: 'memory_save',
+    description: SAVE_DESCRIPTION,
+    parameters: SAVE_PARAMETERS,
+    output: { schema: SAVE_OUTPUT_SCHEMA, render: renderRepoResult },
+    execute: (args, exec) => executeRepoAction(RepoWriter, args, exec),
+  })
+}
 
 export function makeMemoryTool(store) {
   return defineTool({
@@ -38,6 +49,7 @@ export function apply(ctx, config = {}) {
   const snapshots = new WeakMap()
 
   ctx.tools.register(makeMemoryTool(store))
+  ctx.tools.register(makeSaveTool(native.RepoWriter))
 
   ctx.systemPrompt.section({
     name: 'dsh-optimisemd:memory',
