@@ -275,6 +275,14 @@ fn tier0(root: &Path, args: Tier0Args) -> Result<i32, Box<dyn std::error::Error>
                 .map(|t| t.trim().to_string())
                 .filter(|t| !t.is_empty())
                 .collect();
+            // The old maintenance script backed the database up before a merge; keep that safety net.
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let backup = path.with_file_name(format!("memory.db.bak-{stamp}"));
+            store.backup_to(&backup)?;
+            println!("backup: {}", backup.display());
             let id = store.merge(&m.matches, &m.track, &m.scope, &m.text, &tags, "cli")?;
             println!("merged {} entr(ies) into {id}", m.matches.len());
             refresh(root);

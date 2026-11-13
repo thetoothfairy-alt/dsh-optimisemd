@@ -313,6 +313,14 @@ impl Store {
         Ok(hits)
     }
 
+    /// A consistent copy of the live database (VACUUM INTO replays the WAL), the merge's safety net.
+    pub fn backup_to(&self, dest: &Path) -> Result<(), StoreError> {
+        let dest = dest.display().to_string();
+        self.conn
+            .execute("VACUUM INTO ?1", rusqlite::params![dest])?;
+        Ok(())
+    }
+
     /// Consolidate several entries into one (the old maintenance script's `merge`): every match must name exactly one
     /// entry, the survivors are deleted, the replacement is inserted, and the audit records the whole move.
     pub fn merge(
