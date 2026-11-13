@@ -26,6 +26,7 @@ dsh-optimisemd tier0 list|add|replace|remove|query|verify
 dsh-optimisemd check              # the workspace's index check
 dsh-optimisemd export             # memory/logs/memento-export.md from a read-only store copy
 dsh-optimisemd index              # refresh the ranked finder
+dsh-optimisemd slim               # markdown slimming report (budgets parsed from the workspace guard)
 ```
 
 ## Architecture
@@ -53,7 +54,7 @@ repository). On macOS, or when no prebuilt matches, the package's `prepare` buil
 
 ```sh
 cd ~/.dsh/profiles/web
-dsh plugin --profile web add github:thetoothfairy-alt/dsh-optimisemd#v0.2.2
+dsh plugin --profile web add github:thetoothfairy-alt/dsh-optimisemd#v0.3.0
 ```
 
 `dsh` prints the exact `allowBuilds` key to paste into the profile's `pnpm-workspace.yaml` the first time (pnpm blocks

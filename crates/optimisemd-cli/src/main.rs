@@ -6,6 +6,8 @@ use optimisemd_core::{Promoter, Store};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod slim;
+
 #[derive(Parser)]
 #[command(
     name = "dsh-optimisemd",
@@ -28,6 +30,8 @@ enum Cmd {
     Export,
     /// Rebuild the ranked finder index (delegates to the workspace's finder).
     Index,
+    /// Measure the always-read markdown surface against a baseline commit (writes docs/md-slimming-report.md).
+    Slim(SlimCliArgs),
     /// Tier-0 maintenance, the replacement for memento-maintenance.sh: list, add, replace, remove, query, verify.
     Tier0(Tier0Args),
 }
@@ -57,6 +61,12 @@ enum Tier0Cmd {
         #[arg(long)]
         from: String,
     },
+}
+
+#[derive(Args)]
+struct SlimCliArgs {
+    #[arg(long)]
+    baseline: Option<String>,
 }
 
 #[derive(Args)]
@@ -133,6 +143,12 @@ fn run(root: &Path, cmd: Cmd) -> Result<i32, Box<dyn std::error::Error>> {
         Cmd::Check => check(root),
         Cmd::Export => export(root),
         Cmd::Index => index(root),
+        Cmd::Slim(a) => slim::run(
+            root,
+            slim::SlimArgs {
+                baseline: a.baseline.as_deref(),
+            },
+        ),
         Cmd::Tier0(t) => tier0(root, t),
     }
 }
