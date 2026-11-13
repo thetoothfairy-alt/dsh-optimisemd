@@ -198,9 +198,21 @@ fn run(root: &Path, cmd: Cmd) -> Result<i32, Box<dyn std::error::Error>> {
         Cmd::SessionDigest => reports::session_digest(root),
         Cmd::LogIndex => reports::memory_log_index(root),
         Cmd::Landmine(a) => match a.cmd {
-            LandmineCmd::Add { part, text, context, slug, detail } => landmine::add(
+            LandmineCmd::Add {
+                part,
+                text,
+                context,
+                slug,
+                detail,
+            } => landmine::add(
                 root,
-                landmine::AddArgs { part: &part, text: &text, context: &context, slug: &slug, detail: &detail },
+                landmine::AddArgs {
+                    part: &part,
+                    text: &text,
+                    context: &context,
+                    slug: &slug,
+                    detail: &detail,
+                },
             ),
         },
         Cmd::Tier0(t) => tier0(root, t),
@@ -445,75 +457,6 @@ fn verify(
         return Ok(0);
     }
     Ok(if findings.is_empty() { 0 } else { 1 })
-}
-
-fn check(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
-    let code = run_check(root)?;
-    if code == 0 {
-        println!("check: ok");
-    }
-    Ok(code)
-}
-
-fn run_check(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
-    let script = root.join("scripts/check-memory-index.sh");
-    if !script.exists() {
-        eprintln!(
-            "check: no scripts/check-memory-index.sh under {}",
-            root.display()
-        );
-        return Ok(2);
-    }
-    let status = Command::new("bash")
-        .arg(&script)
-        .current_dir(root)
-        .status()?;
-    Ok(status.code().unwrap_or(1))
-}
-
-fn dsh_home() -> Option<PathBuf> {
-    std::env::var("DSH_HOME")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| PathBuf::from(h).join(".dsh"))
-        })
-}
-
-/// The store the plugin owns; created on first write.
-fn store_path_write() -> Option<PathBuf> {
-    dsh_home().map(|h| h.join("dsh-optimisemd/memory.db"))
-}
-
-/// An existing store to read: the plugin's own, else the dsh-memento one it replaces.
-fn store_path_read() -> Option<PathBuf> {
-    let home = dsh_home()?;
-    let new = home.join("dsh-optimisemd/memory.db");
-    if new.exists() {
-        return Some(new);
-    }
-    let old = home.join("dsh-memento/memory.db");
-    if old.exists() {
-        return Some(old);
-    }
-    None
-}
-
-/// Export the tier-0 store the way the finder reads it: a row-store document with both tracks and full text.
-fn export(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
-    let n = export_inner(root)?;
-    if n == 0 {
-        eprintln!("export: no tier-0 store found (DSH_HOME not set and no ~/.dsh store)");
-        return Ok(2);
-    }
-    println!(
-        "wrote {}: {} entries",
-        root.join("memory/logs/memento-export.md").display(),
-        n
-    );
-    Ok(0)
 }
 
 fn index(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {

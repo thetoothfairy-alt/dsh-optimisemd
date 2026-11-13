@@ -26,9 +26,18 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
     if !details.exists() {
         return Err("docs/hard-won-details.md is missing".into());
     }
-    let line = format!("- **{}** — {} — §{}", a.text.trim(), a.context.trim(), a.slug.trim());
+    let line = format!(
+        "- **{}** — {} — §{}",
+        a.text.trim(),
+        a.context.trim(),
+        a.slug.trim()
+    );
     if line.chars().count() > MAX_LINE {
-        return Err(format!("line is {} characters; the cap is {MAX_LINE}", line.chars().count()).into());
+        return Err(format!(
+            "line is {} characters; the cap is {MAX_LINE}",
+            line.chars().count()
+        )
+        .into());
     }
     let part_before = fs::read_to_string(&part)?;
     let details_before = fs::read_to_string(&details)?;
@@ -47,7 +56,11 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
     if !details_after.ends_with('\n') {
         details_after.push('\n');
     }
-    details_after.push_str(&format!("\n### §{}\n\n{}\n", a.slug.trim(), a.detail.trim()));
+    details_after.push_str(&format!(
+        "\n### §{}\n\n{}\n",
+        a.slug.trim(),
+        a.detail.trim()
+    ));
     fs::write(&details, &details_after)?;
 
     let check = Command::new("bash")
@@ -58,7 +71,9 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
     if !ok {
         fs::write(&part, part_before)?;
         fs::write(&details, details_before)?;
-        let out = check.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        let out = check
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
         for l in out.lines().filter(|l| l.contains("FAIL")).take(5) {
             eprintln!("{l}");
         }

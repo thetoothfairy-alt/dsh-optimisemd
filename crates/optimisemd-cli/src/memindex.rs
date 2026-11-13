@@ -10,19 +10,25 @@ use std::path::Path;
 const MAX: usize = 200;
 
 const STOPWORDS: &[&str] = &[
-    "should", "because", "before", "anything", "without", "every", "never", "through", "always", "little",
-    "until", "after", "there", "these", "those", "which", "while", "where", "their", "about", "other",
-    "still", "being", "would", "could", "reports", "report", "system", "restart",
+    "should", "because", "before", "anything", "without", "every", "never", "through", "always",
+    "little", "until", "after", "there", "these", "those", "which", "while", "where", "their",
+    "about", "other", "still", "being", "would", "could", "reports", "report", "system", "restart",
 ];
 
 fn cells(line: &str) -> Vec<String> {
-    line.trim().trim_matches('|').split(" | ").map(|c| c.trim().to_string()).collect()
+    line.trim()
+        .trim_matches('|')
+        .split(" | ")
+        .map(|c| c.trim().to_string())
+        .collect()
 }
 
 fn words_of(fact: &str) -> HashSet<String> {
     let re = Regex::new(r"[A-Za-z]{6,}").unwrap();
-    re.find_iter(fact).map(|m| m.as_str().to_lowercase())
-        .filter(|w| !STOPWORDS.contains(&w.as_str())).collect()
+    re.find_iter(fact)
+        .map(|m| m.as_str().to_lowercase())
+        .filter(|w| !STOPWORDS.contains(&w.as_str()))
+        .collect()
 }
 
 pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
@@ -57,7 +63,10 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
             }
             if let Some(caps) = row_re.captures(line) {
                 fact_rows += 1;
-                if section.as_deref().map_or(true, |s| s.starts_with("## Detail")) {
+                if section
+                    .as_deref()
+                    .is_none_or(|s| s.starts_with("## Detail"))
+                {
                     findings.push(format!("{target}:{i}: a fact row outside a subject section — put it under a `##` heading, above the detail table"));
                 }
                 let path = caps[1].to_string();
@@ -66,11 +75,15 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
                     findings.push(format!("{target}:{i}: row text is {} chars, cap {MAX} — split the fact or move detail out", text_before.chars().count()));
                 }
                 if !root.join(&path).exists() {
-                    findings.push(format!("{target}:{i}: points at {path}, which does not exist"));
+                    findings.push(format!(
+                        "{target}:{i}: points at {path}, which does not exist"
+                    ));
                 } else {
                     pointed.insert(path.clone());
-                    let family = path.starts_with("docs/memory-details/") || path.starts_with("docs/runbooks/")
-                        || path.starts_with("skills/") || path == "docs/hard-won.md";
+                    let family = path.starts_with("docs/memory-details/")
+                        || path.starts_with("docs/runbooks/")
+                        || path.starts_with("skills/")
+                        || path == "docs/hard-won.md";
                     if !family {
                         findings.push(format!("{target}:{i}: a fact row hops to {path} — point it at a docs/memory-details/ part, its runbook, a skill, or docs/hard-won.md (docs/runbooks/memory.md)"));
                     }
@@ -83,16 +96,27 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
             }
             if line.starts_with("| §") {
                 let cs = cells(line);
-                if cs.len() < 2 { continue; }
+                if cs.len() < 2 {
+                    continue;
+                }
                 let slug = cs[0].trim_start_matches('§').to_string();
                 let last = cs.last().unwrap().trim_matches('`').to_string();
-                if !last.ends_with(".md") { continue; }
+                if !last.ends_with(".md") {
+                    continue;
+                }
                 detail_rows += 1;
                 if slug.is_empty() || !slug_ok.is_match(&slug) {
-                    findings.push(format!("{target}:{i}: detail row's first cell is not a §slug"));
+                    findings.push(format!(
+                        "{target}:{i}: detail row's first cell is not a §slug"
+                    ));
                 } else if !root.join(&last).exists() {
-                    findings.push(format!("{target}:{i}: §{slug} points at {last}, which does not exist"));
-                } else if !fs::read_to_string(root.join(&last)).unwrap_or_default().contains(&format!("§{slug}")) {
+                    findings.push(format!(
+                        "{target}:{i}: §{slug} points at {last}, which does not exist"
+                    ));
+                } else if !fs::read_to_string(root.join(&last))
+                    .unwrap_or_default()
+                    .contains(&format!("§{slug}"))
+                {
                     findings.push(format!("{target}:{i}: §{slug} is not in {last}"));
                 } else {
                     pointed.insert(last);
@@ -107,9 +131,13 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
         let text = fs::read_to_string(root.join(target)).unwrap_or_default();
         for (i, line) in text.lines().enumerate() {
             let i = i + 1;
-            let Some(caps) = row_re.captures(line) else { continue };
+            let Some(caps) = row_re.captures(line) else {
+                continue;
+            };
             let mut fact = line.strip_prefix("- **").unwrap_or(line).to_string();
-            if fact.ends_with("**") { fact.truncate(fact.len() - 2); }
+            if fact.ends_with("**") {
+                fact.truncate(fact.len() - 2);
+            }
             let fact = fact.split(" — `").next().unwrap_or("").to_string();
             let words = words_of(&fact);
             let key = caps[1].to_string();
@@ -132,7 +160,9 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
         if let Ok(rd) = fs::read_dir(root.join(dir)) {
             for e in rd.flatten() {
                 let n = e.file_name().to_string_lossy().to_string();
-                if n.ends_with(".md") { parts.push(format!("{dir}/{n}")); }
+                if n.ends_with(".md") {
+                    parts.push(format!("{dir}/{n}"));
+                }
             }
         }
     }
@@ -144,7 +174,9 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
         let text = fs::read_to_string(root.join(part)).unwrap_or_default();
         let lines: Vec<&str> = text.lines().collect();
         for (i, line) in lines.iter().enumerate() {
-            if slug_re.is_match(line) && (i.saturating_sub(3)..i).any(|j| lines[j].starts_with("### ")) {
+            if slug_re.is_match(line)
+                && (i.saturating_sub(3)..i).any(|j| lines[j].starts_with("### "))
+            {
                 findings.push(format!("{part}:{}: a `§slug` label sits under a heading that already carries the address", i + 1));
             }
         }
@@ -153,6 +185,13 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
     for f in &findings {
         println!("{f}");
     }
-    println!("indexes {} · fact rows {} (cap {}) · detail rows {} · findings {}", targets.len(), fact_rows, MAX, detail_rows, findings.len());
+    println!(
+        "indexes {} · fact rows {} (cap {}) · detail rows {} · findings {}",
+        targets.len(),
+        fact_rows,
+        MAX,
+        detail_rows,
+        findings.len()
+    );
     Ok(if findings.is_empty() { 0 } else { 1 })
 }
