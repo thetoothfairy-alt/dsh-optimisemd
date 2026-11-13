@@ -89,10 +89,14 @@ impl Repo {
             return Err(RepoError::Duplicate(needle));
         }
         let row = format!("- **{text}** ({date}) — `{pointer}`");
-        let heading = section.unwrap_or(DEFAULT_SECTION);
+        let heading = section.unwrap_or(DEFAULT_SECTION).trim().to_string();
         let mut lines: Vec<String> = body.lines().map(str::to_string).collect();
-        let at = lines.iter().position(|l| l.trim() == heading.trim());
-        match at {
+        let headings: Vec<String> = lines
+            .iter()
+            .filter(|l| l.starts_with("## "))
+            .map(|l| l.trim().to_string())
+            .collect();
+        match lines.iter().position(|l| l.trim() == heading) {
             Some(i) => {
                 let mut j = i + 1;
                 while j < lines.len() && !lines[j].starts_with("## ") {
@@ -101,13 +105,18 @@ impl Repo {
                 lines.insert(j, row.clone());
             }
             None => {
-                let at = lines
-                    .iter()
-                    .position(|l| l.trim() == "## Subject facts")
-                    .unwrap_or(lines.len());
+                // A named section that does not exist yet is created before Subject facts, as before. With no Subject
+                // facts either, nothing can place the row safely — name the headings instead of writing a row outside
+                // every section (the index gate refuses that, 2026-11-14).
+                let Some(at) = lines.iter().position(|l| l.trim() == DEFAULT_SECTION) else {
+                    return Err(RepoError::Invalid(format!(
+                        "no `{heading}` section in MEMORY.md — pass section with one of: {}",
+                        headings.join(", ")
+                    )));
+                };
                 lines.insert(at, row.clone());
                 lines.insert(at + 1, String::new());
-                lines.insert(at + 2, heading.to_string());
+                lines.insert(at + 2, heading.clone());
             }
         }
         body = lines.join("\n");
@@ -290,6 +299,35 @@ mod tests {
         fs::create_dir_all(dir.join("memory")).unwrap();
         fs::write(dir.join("MEMORY.md"), "# MEMORY.md\n\n## Read these first\n- **Never touch the live service.** (2026-01-01) — `docs/hard-won.md`\n\n## Subject facts\n- **An existing row.** (2026-01-01) — `docs/memory-details/01.md`\n").unwrap();
         dir
+    }
+
+    #[test]
+    fn a_missing_section_is_named_not_guessed() {
+        let ws = workspace("nosection");
+        fs::write(
+            ws.join("MEMORY.md"),
+            "# MEMORY.md\n\n## Machines\n- **A row.** (2026-01-01) — `docs/runbooks/memory.md`\n",
+        )
+        .unwrap();
+        let repo = Repo::new(&ws);
+        let err = repo
+            .save(
+                "A new fact.",
+                "2026-11-14",
+                "docs/runbooks/memory.md",
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("pass section"), "{err}");
+        let after = fs::read_to_string(ws.join("MEMORY.md")).unwrap();
+        assert!(
+            !after.contains("A new fact."),
+            "the row must not be written"
+        );
+        let _ = fs::remove_dir_all(&ws);
     }
 
     #[test]
