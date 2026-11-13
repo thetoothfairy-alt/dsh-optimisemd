@@ -8,9 +8,9 @@ import { loadNative, nativeFile } from '../lib/native.mjs'
 import { executeMemoryAction } from '../lib/action.mjs'
 
 test('nativeFile names one artifact per platform', () => {
-  assert.equal(nativeFile('linux', 'x64'), 'dsh-memory.linux-x64.node')
-  assert.equal(nativeFile('darwin', 'arm64'), 'dsh-memory.darwin-arm64.node')
-  assert.equal(nativeFile('win32', 'x64'), 'dsh-memory.win32-x64.node')
+  assert.equal(nativeFile('linux', 'x64'), 'dsh-optimisemd.linux-x64.node')
+  assert.equal(nativeFile('darwin', 'arm64'), 'dsh-optimisemd.darwin-arm64.node')
+  assert.equal(nativeFile('win32', 'x64'), 'dsh-optimisemd.win32-x64.node')
 })
 
 test('a missing addon says which file and how to build it', () => {
@@ -18,7 +18,7 @@ test('a missing addon says which file and how to build it', () => {
 })
 
 test('the tool executes against the store and refuses empty text', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-memory-tool-'))
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-optimisemd-tool-'))
   try {
     const { MemoryStore } = loadNative()
     const store = new MemoryStore(join(dir, 'memory.db'), 2000, 4000)

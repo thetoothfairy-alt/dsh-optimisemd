@@ -23,19 +23,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: cargo build --release -p memory-node
+      - run: cargo build --release -p optimisemd-node
       - name: stage the addon
         shell: bash
         run: |
           mkdir -p native
           case "${{ runner.os }}" in
-            Linux) cp target/release/libmemory_node.so native/dsh-memory.linux-x64.node ;;
-            macOS) cp target/release/libmemory_node.dylib native/dsh-memory.darwin-arm64.node ;;
-            Windows) cp target/release/memory_node.dll native/dsh-memory.win32-x64.node ;;
+            Linux) cp target/release/liboptimisemd_node.so native/dsh-optimisemd.linux-x64.node ;;
+            macOS) cp target/release/liboptimisemd_node.dylib native/dsh-optimisemd.darwin-arm64.node ;;
+            Windows) cp target/release/optimisemd_node.dll native/dsh-optimisemd.win32-x64.node ;;
           esac
       - uses: actions/upload-artifact@v4
         with:
-          name: dsh-memory-${{ matrix.target }}
+          name: dsh-optimisemd-${{ matrix.target }}
           path: native/*.node
 
   publish:
@@ -48,7 +48,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: native
-          pattern: dsh-memory-*
+          pattern: dsh-optimisemd-*
           merge-multiple: true
       - name: attach the addons to the release
         uses: softprops/action-gh-release@v2

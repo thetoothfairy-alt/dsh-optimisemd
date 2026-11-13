@@ -1,7 +1,7 @@
-//! Native addon surface for the `dsh-memory` plugin. Everything crosses as plain data; no async,
+//! Native addon surface for the `dsh-optimisemd` plugin. Everything crosses as plain data; no async,
 //! no threads: the store is a local SQLite file and the calls are microseconds.
 
-use memory_core::{Budgets, Entry, Store};
+use optimisemd_core::{Budgets, Entry, Store};
 use napi_derive::napi;
 use std::path::Path;
 
@@ -35,7 +35,7 @@ pub struct Usage {
     pub agent_cap: u32,
 }
 
-fn fail(e: memory_core::StoreError) -> napi::Error {
+fn fail(e: optimisemd_core::StoreError) -> napi::Error {
     napi::Error::from_reason(e.to_string())
 }
 

@@ -1,4 +1,4 @@
-// dsh-memory — tier-0 memory for DSH: a Rust store behind a native addon, plus the frozen snapshot the
+// dsh-optimisemd — tier-0 memory for DSH: a Rust store behind a native addon, plus the frozen snapshot the
 // session reads at its first assembly. The host surface is small on purpose: tools + systemPrompt.
 // Everything that can be wrong (caps, unique-match, audit) lives in Rust, and the host-free halves live
 // in lib/ so they can be tested without a harness.
@@ -15,7 +15,7 @@ export const DEFAULT_BUDGETS = Object.freeze({ user: 2000, agent: 4000 })
 export const DEFAULT_SNAPSHOT_ORDER = -50
 
 export const Config = Schema.object({
-  dbPath: Schema.string().default('').description('SQLite file; empty = $DSH_HOME/dsh-memory/memory.db'),
+  dbPath: Schema.string().default('').description('SQLite file; empty = $DSH_HOME/dsh-optimisemd/memory.db'),
   userCap: Schema.number().default(DEFAULT_BUDGETS.user).description('Characters for user/user-global'),
   agentCap: Schema.number().default(DEFAULT_BUDGETS.agent).description('Characters for agent/workspace'),
   snapshotOrder: Schema.number().default(DEFAULT_SNAPSHOT_ORDER).description('systemPrompt section order'),
@@ -40,7 +40,7 @@ export function apply(ctx, config = {}) {
   ctx.tools.register(makeMemoryTool(store))
 
   ctx.systemPrompt.section({
-    name: 'dsh-memory:memory',
+    name: 'dsh-optimisemd:memory',
     order: config.snapshotOrder ?? DEFAULT_SNAPSHOT_ORDER,
     text: (assemble) => {
       const session = assemble?.agent?.session

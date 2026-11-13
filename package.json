@@ -1,5 +1,5 @@
 {
-  "name": "dsh-memory",
+  "name": "dsh-optimisemd",
   "version": "0.1.0",
   "description": "Tier-0 memory for DSH \u2014 a Rust store (native addon) behind the memory tool and the frozen session snapshot.",
   "type": "module",
@@ -46,6 +46,6 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/bwra/dsh-memory"
+    "url": "https://github.com/bwra/dsh-optimisemd"
   }
 }

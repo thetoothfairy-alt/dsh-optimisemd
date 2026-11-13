@@ -1,12 +1,12 @@
 [workspace]
-members = ["crates/memory-core", "crates/memory-node"]
+members = ["crates/optimisemd-core", "crates/optimisemd-node"]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/bwra/dsh-memory"
+repository = "https://github.com/bwra/dsh-optimisemd"
 
 [profile.release]
 lto = "thin"

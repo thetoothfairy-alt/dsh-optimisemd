@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 
 export interface Config {
-  /** SQLite file; empty = $DSH_HOME/dsh-memory/memory.db */
+  /** SQLite file; empty = $DSH_HOME/dsh-optimisemd/memory.db */
   dbPath?: string
   /** Characters allowed in user/user-global (default 2000) */
   userCap?: number

@@ -1,5 +1,5 @@
 [package]
-name = "memory-node"
+name = "optimisemd-node"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-memory-core = { path = "../memory-core" }
+optimisemd-core = { path = "../optimisemd-core" }
 napi = { version = "3", default-features = false, features = ["napi8"] }
 napi-derive = "3"
 

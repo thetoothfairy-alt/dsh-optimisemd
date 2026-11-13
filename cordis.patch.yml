@@ -1,6 +1,6 @@
-# dsh-memory bundle patch: mount the tier-0 memory plugin.
+# dsh-optimisemd bundle patch: mount the tier-0 memory plugin.
 - insert:
     - id: memory
-      name: dsh-memory
+      name: dsh-optimisemd
       config:
         snapshotOrder: -50

@@ -1,4 +1,4 @@
-# dsh-memory
+# dsh-optimisemd
 
 Tier-0 memory for DeepSeek Harness: a small, capped store that every session reads once at its first
 assembly, plus a `memory` tool to change it. The store and its rules are Rust; the plugin is a thin
@@ -15,9 +15,9 @@ session first assembly ──▶ systemPrompt section (order -50) ──▶ froz
 model calls memory tool ──▶ lib/action.mjs ──▶ native addon ──▶ rusqlite (WAL) + audit table
 ```
 
-- `crates/memory-core` — the store: caps (user 2000 / agent 4000 chars), unique-substring
+- `crates/optimisemd-core` — the store: caps (user 2000 / agent 4000 chars), unique-substring
   replace/remove, audit rows, snapshot rendering, import from `dsh-memento`.
-- `crates/memory-node` — the N-API addon (napi-rs), exposed as `MemoryStore`.
+- `crates/optimisemd-node` — the N-API addon (napi-rs), exposed as `MemoryStore`.
 - `lib/native.mjs`, `lib/action.mjs` — host-free halves: addon lookup, DB path, tool body.
 - `index.mjs` — the cordis plugin: `apply` registers the tool and the snapshot section.
 - `cordis.patch.yml` — the bundle patch `dsh` composes.
@@ -31,13 +31,13 @@ From a tag (the release attaches one `.node` per target; nothing is built at ins
 
 ```sh
 cd ~/.dsh/profiles/web
-dsh plugin --profile web add github:bwra/dsh-memory#v0.1.0
+dsh plugin --profile web add github:bwra/dsh-optimisemd#v0.1.0
 ```
 
 From a checkout (development — needs the Rust toolchain; `prepare` builds the addon):
 
 ```sh
-dsh plugin --profile web add link:/path/to/dsh-memory
+dsh plugin --profile web add link:/path/to/dsh-optimisemd
 bash scripts/build-native.sh
 ```
 
@@ -54,7 +54,7 @@ Per-profile overrides (for example a different database file) go in the profile'
 ## Build and test
 
 ```sh
-pnpm build     # cargo build --release + native/dsh-memory.<os>-<arch>.node
+pnpm build     # cargo build --release + native/dsh-optimisemd.<os>-<arch>.node
 pnpm test      # node --test tests/*.test.mjs
 cargo test     # store + snapshot unit tests
 ```

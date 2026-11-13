@@ -8,7 +8,7 @@ import { loadNative } from '../lib/native.mjs'
 
 const { MemoryStore } = loadNative()
 const fresh = () => {
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-memory-'))
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-optimisemd-'))
   return { store: new MemoryStore(join(dir, 'memory.db'), 2000, 4000), dir }
 }
 
