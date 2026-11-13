@@ -15,7 +15,6 @@ pub struct Row {
     pub file: String,
     pub old: Option<u64>,
     pub now: u64,
-    pub lines: u64,
     pub budget: Option<(u64, u64)>, // (lines, chars)
 }
 
@@ -28,7 +27,7 @@ fn fmt(n: i64) -> String {
     let digits = n.unsigned_abs().to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -54,7 +53,9 @@ fn git_show_size(root: &Path, rev: &str, path: &str) -> Option<u64> {
     }
 }
 
-fn read_budgets(guard: &str) -> Result<Vec<(String, u64, u64)>, Box<dyn Error>> {
+type Budget = (String, u64, u64);
+
+fn read_budgets(guard: &str) -> Result<Vec<Budget>, Box<dyn Error>> {
     let start = guard
         .find("BUDGETS_BLOCK=$(cat <<'BUDGETS'\n")
         .ok_or("no BUDGETS_BLOCK found in scripts/check-context-files.sh")?
@@ -145,7 +146,6 @@ pub fn run(root: &Path, args: SlimArgs) -> Result<i32, Box<dyn Error>> {
             file: f,
             old,
             now,
-            lines,
             budget,
         });
     }
