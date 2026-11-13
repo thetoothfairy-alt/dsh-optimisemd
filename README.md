@@ -33,7 +33,7 @@ package's `prepare` builds the addon from source:
 
 ```sh
 cd ~/.dsh/profiles/web
-dsh plugin --profile web add github:thetoothfairy-alt/dsh-optimisemd#v0.1.0
+dsh plugin --profile web add github:thetoothfairy-alt/dsh-optimisemd#v0.1.1
 ```
 
 `dsh` prints the exact `allowBuilds` key to paste into the profile's `pnpm-workspace.yaml` the first time (pnpm blocks
