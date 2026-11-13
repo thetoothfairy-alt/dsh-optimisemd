@@ -1,0 +1,51 @@
+{
+  "name": "dsh-memory",
+  "version": "0.1.0",
+  "description": "Tier-0 memory for DSH \u2014 a Rust store (native addon) behind the memory tool and the frozen session snapshot.",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.mjs"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "index.d.ts",
+    "cordis.patch.yml",
+    "native",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "bash scripts/build-native.sh",
+    "test": "node --test tests/*.test.mjs",
+    "prepare": "bash scripts/build-native.sh"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "capabilities": [
+      "tools:register"
+    ]
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.3",
+    "@deepseek-ai/dsh-tools": ">=0.2.2-0 <0.3.0",
+    "@deepseek-ai/schemastery": "^1.0.0"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.9.0",
+    "dsh": ">=0.2.2-0 <0.3.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bwra/dsh-memory"
+  }
+}

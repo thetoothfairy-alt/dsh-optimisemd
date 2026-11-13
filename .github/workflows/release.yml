@@ -1,0 +1,57 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: macos-14
+            target: darwin-arm64
+          - os: windows-latest
+            target: win32-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: cargo build --release -p memory-node
+      - name: stage the addon
+        shell: bash
+        run: |
+          mkdir -p native
+          case "${{ runner.os }}" in
+            Linux) cp target/release/libmemory_node.so native/dsh-memory.linux-x64.node ;;
+            macOS) cp target/release/libmemory_node.dylib native/dsh-memory.darwin-arm64.node ;;
+            Windows) cp target/release/memory_node.dll native/dsh-memory.win32-x64.node ;;
+          esac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dsh-memory-${{ matrix.target }}
+          path: native/*.node
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: native
+          pattern: dsh-memory-*
+          merge-multiple: true
+      - name: attach the addons to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: native/*.node
+          generate_release_notes: true
