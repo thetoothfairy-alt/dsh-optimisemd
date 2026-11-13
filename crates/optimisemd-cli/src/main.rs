@@ -28,6 +28,51 @@ enum Cmd {
     Export,
     /// Rebuild the ranked finder index (delegates to the workspace's finder).
     Index,
+    /// Tier-0 maintenance, the replacement for memento-maintenance.sh: list, add, replace, remove, query.
+    Tier0(Tier0Args),
+}
+
+#[derive(Args)]
+struct Tier0Args {
+    #[command(subcommand)]
+    cmd: Tier0Cmd,
+}
+
+#[derive(Subcommand)]
+enum Tier0Cmd {
+    List,
+    Add(AddArgs),
+    Replace(ReplaceArgs),
+    Remove(RemoveArgs),
+    Query { text: String },
+}
+
+#[derive(Args)]
+struct AddArgs {
+    #[arg(long, default_value = "agent")]
+    track: String,
+    #[arg(long, default_value = "workspace")]
+    scope: String,
+    #[arg(long)]
+    text: String,
+    #[arg(long, default_value = "")]
+    tags: String,
+    #[arg(long, default_value = "cli")]
+    source: String,
+}
+
+#[derive(Args)]
+struct ReplaceArgs {
+    #[arg(long)]
+    match_: String,
+    #[arg(long)]
+    text: String,
+}
+
+#[derive(Args)]
+struct RemoveArgs {
+    #[arg(long)]
+    match_: String,
 }
 
 #[derive(Args)]
@@ -59,6 +104,7 @@ fn run(root: &Path, cmd: Cmd) -> Result<i32, Box<dyn std::error::Error>> {
         Cmd::Check => check(root),
         Cmd::Export => export(root),
         Cmd::Index => index(root),
+        Cmd::Tier0(t) => tier0(root, t),
     }
 }
 
@@ -125,6 +171,67 @@ fn promote(root: &Path, a: PromoteArgs) -> Result<i32, Box<dyn std::error::Error
     Ok(0)
 }
 
+fn tier0(_root: &Path, args: Tier0Args) -> Result<i32, Box<dyn std::error::Error>> {
+    let path = match args.cmd {
+        Tier0Cmd::Add(_) => store_path_write(),
+        _ => store_path_read(),
+    };
+    let Some(path) = path else {
+        eprintln!("tier0: no store found (DSH_HOME not set and no ~/.dsh store)");
+        return Ok(2);
+    };
+    let store = Store::open(&path, Default::default())?;
+    match args.cmd {
+        Tier0Cmd::List => {
+            let entries = store.list_entries()?;
+            let user = store.usage("user", "user-global")?;
+            let agent = store.usage("agent", "workspace")?;
+            println!(
+                "store {} · user {}/{} · agent {}/{}",
+                path.display(),
+                user,
+                store.cap("user"),
+                agent,
+                store.cap("agent")
+            );
+            for e in entries {
+                println!(
+                    "  [{}/{}] ({} chars, {}) {}",
+                    e.track,
+                    e.scope,
+                    e.text.chars().count(),
+                    e.source,
+                    e.text
+                );
+            }
+        }
+        Tier0Cmd::Add(a) => {
+            let tags: Vec<String> = a
+                .tags
+                .split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+            let id = store.add(&a.track, &a.scope, &a.text, &tags, &a.source, "", "", "")?;
+            println!("added {id}");
+        }
+        Tier0Cmd::Replace(r) => {
+            let e = store.replace(&r.match_, &r.text, "")?;
+            println!("replaced {}", e.id);
+        }
+        Tier0Cmd::Remove(r) => {
+            let e = store.remove(&r.match_, "")?;
+            println!("removed {}", e.id);
+        }
+        Tier0Cmd::Query { text } => {
+            for e in store.query(&text, 20, "")? {
+                println!("  [{}/{}] {}", e.track, e.scope, e.text);
+            }
+        }
+    }
+    Ok(0)
+}
+
 fn check(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
     let code = run_check(root)?;
     if code == 0 {
@@ -149,30 +256,39 @@ fn run_check(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
     Ok(status.code().unwrap_or(1))
 }
 
-fn store_path(root: &Path) -> Option<PathBuf> {
-    let home = std::env::var("DSH_HOME")
+fn dsh_home() -> Option<PathBuf> {
+    std::env::var("DSH_HOME")
         .ok()
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var("HOME")
                 .ok()
                 .map(|h| PathBuf::from(h).join(".dsh"))
-        })?;
+        })
+}
+
+/// The store the plugin owns; created on first write.
+fn store_path_write() -> Option<PathBuf> {
+    dsh_home().map(|h| h.join("dsh-optimisemd/memory.db"))
+}
+
+/// An existing store to read: the plugin's own, else the dsh-memento one it replaces.
+fn store_path_read() -> Option<PathBuf> {
+    let home = dsh_home()?;
     let new = home.join("dsh-optimisemd/memory.db");
-    let old = home.join("dsh-memento/memory.db");
     if new.exists() {
-        Some(new)
-    } else if old.exists() {
-        Some(old)
-    } else {
-        let _ = root;
-        None
+        return Some(new);
     }
+    let old = home.join("dsh-memento/memory.db");
+    if old.exists() {
+        return Some(old);
+    }
+    None
 }
 
 /// Export the tier-0 store the way the finder reads it: a row-store document with both tracks and full text.
 fn export(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
-    let Some(src) = store_path(root) else {
+    let Some(src) = store_path_read() else {
         eprintln!("export: no tier-0 store found (DSH_HOME not set and no ~/.dsh store)");
         return Ok(2);
     };
