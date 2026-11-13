@@ -12,7 +12,9 @@ cd "$(dirname "$0")/.."
 TAG="${1:-$(git describe --tags --abbrev=0 2>/dev/null || echo main)}"
 HOST="${AIR_HOST:-macbook-air}"
 DEST="${2:-native/dsh-optimisemd.darwin-arm64.node}"
-ssh "$HOST" "rm -rf ~/dsh-optimisemd-build && git clone -q --depth 1 --branch '$TAG' https://github.com/thetoothfairy-alt/dsh-optimisemd.git ~/dsh-optimisemd-build && cd ~/dsh-optimisemd-build && bash scripts/build-native.sh"
+# Build paths end up in panic/debug strings. Remap the Air's home (and the cargo registry under it) to /build so the
+# published addon does not carry the owner's macOS username.
+ssh "$HOST" "rm -rf ~/dsh-optimisemd-build && git clone -q --depth 1 --branch '$TAG' https://github.com/thetoothfairy-alt/dsh-optimisemd.git ~/dsh-optimisemd-build && cd ~/dsh-optimisemd-build && RUSTFLAGS=\"--remap-path-prefix=\$HOME=/build\" bash scripts/build-native.sh"
 mkdir -p "$(dirname "$DEST")"
 scp -q "$HOST:~/dsh-optimisemd-build/native/dsh-optimisemd.darwin-arm64.node" "$DEST"
 file "$DEST"
