@@ -14,6 +14,7 @@ mod slim;
 #[derive(Parser)]
 #[command(
     name = "dsh-optimisemd",
+    version,
     about = "Memory management for the workspace: promote, check, export, index."
 )]
 struct Cli {

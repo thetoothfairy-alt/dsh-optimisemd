@@ -60,7 +60,7 @@ repository). On macOS, or when no prebuilt matches, the package's `prepare` buil
 
 ```sh
 cd ~/.dsh/profiles/web
-dsh plugin --profile web add github:thetoothfairy-alt/dsh-optimisemd#v0.4.2
+dsh plugin --profile web add github:thetoothfairy-alt/dsh-optimisemd#v0.4.3
 ```
 
 `dsh` prints the exact `allowBuilds` key to paste into the profile's `pnpm-workspace.yaml` the first time (pnpm blocks
