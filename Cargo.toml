@@ -3,7 +3,7 @@ members = ["crates/optimisemd-core", "crates/optimisemd-node", "crates/optimisem
 resolver = "2"
 
 [workspace.package]
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/thetoothfairy-alt/dsh-optimisemd"

@@ -193,13 +193,11 @@ impl Repo {
         if !script.exists() {
             return Ok(written);
         }
-        let ok = std::process::Command::new("bash")
+        let gate = std::process::Command::new("bash")
             .arg(&script)
             .current_dir(&self.root)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if ok {
+            .output();
+        if gate.as_ref().map(|o| o.status.success()).unwrap_or(false) {
             return Ok(written);
         }
         // restore every tracked file, and remove the files this save created that had no prior copy
@@ -214,9 +212,31 @@ impl Repo {
                 let _ = std::fs::remove_file(p);
             }
         }
-        Err(RepoError::Invalid(
-            "the index check failed; the save was rolled back".into(),
-        ))
+        // Report WHY, not just that it failed: the checker's findings are the reason, and a generic message sends the
+        // session hunting through files it may not have touched (the summary line is dropped).
+        let findings = gate
+            .ok()
+            .map(|o| {
+                format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                )
+            })
+            .map(|text| {
+                text.lines()
+                    .filter(|l| !l.trim().is_empty() && !l.starts_with("indexes "))
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .unwrap_or_default();
+        let msg = if findings.is_empty() {
+            "the index check failed; the save was rolled back".to_string()
+        } else {
+            format!("the index check failed; the save was rolled back — {findings}")
+        };
+        Err(RepoError::Invalid(msg))
     }
 
     /// Supersede an existing row in place: the new text and date replace the old one, never a second row.
@@ -408,7 +428,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("scripts")).unwrap();
         std::fs::write(
             dir.join("scripts/check-memory-index.sh"),
-            "#!/usr/bin/env bash\nexit 1\n",
+            "#!/usr/bin/env bash\necho 'MEMORY.md:3: a planted finding'; echo 'indexes 1 · fact rows 0 · findings 1'; exit 1\n",
         )
         .unwrap();
         let repo = Repo::new(&dir);
@@ -422,7 +442,15 @@ mod tests {
             Some("slug"),
             Some("detail"),
         );
-        assert!(matches!(out, Err(RepoError::Invalid(_))));
+        match out {
+            Err(RepoError::Invalid(msg)) => {
+                assert!(
+                    msg.contains("planted finding") && msg.contains("rolled back"),
+                    "{msg}"
+                )
+            }
+            other => panic!("expected an Invalid error, got {other:?}"),
+        }
         assert_eq!(fs::read_to_string(dir.join("MEMORY.md")).unwrap(), before);
         assert!(!dir.join("docs/memory-details/02.md").exists());
         assert!(!dir.join("memory/2026-11-13.md").exists());
