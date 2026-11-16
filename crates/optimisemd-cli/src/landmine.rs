@@ -5,7 +5,6 @@
 use std::error::Error;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 pub struct AddArgs<'a> {
     pub part: &'a str,
@@ -101,10 +100,8 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
         format!("docs/hard-won/{part_name}"),
         "docs/hard-won-details.md".to_string(),
     ];
-    let check = Command::new("bash")
-        .arg(root.join("scripts/check-context-files.sh"))
-        .current_dir(root)
-        .output();
+    let check =
+        optimisemd_core::util::run_script(&root.join("scripts/check-context-files.sh"), root);
     let ok = matches!(&check, Ok(o) if o.status.success());
     if !ok {
         optimisemd_core::write_atomic(&part, &part_before)?;

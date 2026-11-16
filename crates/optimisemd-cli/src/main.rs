@@ -782,11 +782,8 @@ fn run_check(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
         );
         return Ok(2);
     }
-    // Direct execution: a shim or the binary; `bash` cannot run the binary form. Windows cannot
-    // execute a .sh directly either, so a failed spawn retries through bash.
-    let status = Command::new(&script)
-        .current_dir(root)
-        .status()
-        .or_else(|_| Command::new("bash").arg(&script).current_dir(root).status())?;
-    Ok(status.code().unwrap_or(1))
+    // Direct execution: a shim or the binary; `bash` cannot run the binary form. Hosts that cannot
+    // execute a .sh at all fall back through the shared runner (bash, then sh).
+    let out = optimisemd_core::util::run_script(&script, root)?;
+    Ok(out.status.code().unwrap_or(1))
 }

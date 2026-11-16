@@ -55,3 +55,26 @@ pub fn local_datetime(epoch: i64) -> String {
         })
         .unwrap_or_else(local_now)
 }
+
+/// Run a workspace script as a gate: directly (a shim or the binary itself), then through `bash`,
+/// then `sh`. Windows cannot execute a .sh directly, and its shells want the file NAME from the
+/// script's own directory rather than a Windows path — so the fallbacks are built that way.
+pub fn run_script(script: &Path, direct_cwd: &Path) -> std::io::Result<std::process::Output> {
+    use std::process::Command;
+    if let Ok(out) = Command::new(script).current_dir(direct_cwd).output() {
+        return Ok(out);
+    }
+    let parent = script.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let name = script
+        .file_name()
+        .map(std::ffi::OsString::from)
+        .unwrap_or_default();
+    if let Ok(out) = Command::new("bash")
+        .arg(&name)
+        .current_dir(&parent)
+        .output()
+    {
+        return Ok(out);
+    }
+    Command::new("sh").arg(&name).current_dir(&parent).output()
+}

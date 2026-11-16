@@ -90,10 +90,24 @@ pub fn ws_key(root: &Path) -> String {
     )
 }
 
+/// Windows canonicalize() returns a `\\?\` verbatim path; the harness names session folders from the
+/// plain form, shells cannot start in a verbatim directory, and the two forms compare unequal. Strip
+/// the prefix so the root means the same string everywhere (v0.4.8).
+pub fn unverbatim(p: std::path::PathBuf) -> std::path::PathBuf {
+    let s = p.to_string_lossy().to_string();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        std::path::PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        std::path::PathBuf::from(rest.to_string())
+    } else {
+        p
+    }
+}
+
 /// The root as the tool must see it: absolute. A relative root (".") turns the workspace's session folder into
 /// "--.--", which is how the session index silently went empty from 0.4.0 to 0.4.4 (fixed 2026-11-16).
 pub fn canonical_root(root: &Path) -> std::path::PathBuf {
-    root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
+    unverbatim(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()))
 }
 
 /// Every transcript for this workspace, live first then archived, each list sorted by path.
@@ -891,6 +905,23 @@ mod tests {
     fn canonical_root_makes_a_relative_root_absolute() {
         let cwd = std::env::current_dir().unwrap();
         assert_eq!(canonical_root(Path::new(".")), cwd);
+    }
+
+    #[test]
+    fn windows_verbatim_paths_become_plain_ones() {
+        // The \\?\ prefix broke the session folder name, shell starts and path comparisons on Windows.
+        assert_eq!(
+            unverbatim(std::path::PathBuf::from(r"\\?\C:\work\ws")),
+            std::path::PathBuf::from(r"C:\work\ws")
+        );
+        assert_eq!(
+            unverbatim(std::path::PathBuf::from(r"\\?\UNC\server\share")),
+            std::path::PathBuf::from(r"\\server\share")
+        );
+        assert_eq!(
+            unverbatim(std::path::PathBuf::from("/home/admin/ws")),
+            std::path::PathBuf::from("/home/admin/ws")
+        );
     }
 
     #[test]

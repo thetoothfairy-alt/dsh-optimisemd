@@ -17,8 +17,15 @@ fn temp(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("optimisemd-it-{}-{label}-{n}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
-    // The binary canonicalises its root; the fixture must spell the workspace the same way.
-    fs::canonicalize(&dir).unwrap()
+    // The binary canonicalises its root and drops Windows' \\?\ prefix; the fixture must spell the
+    // workspace the same way.
+    let abs = fs::canonicalize(&dir).unwrap();
+    let s = abs.to_string_lossy().to_string();
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest.to_string())
+    } else {
+        abs
+    }
 }
 
 fn ws_key(root: &Path) -> String {
