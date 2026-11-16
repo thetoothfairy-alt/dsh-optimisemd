@@ -245,35 +245,74 @@ pub fn local_datetime(epoch: i64) -> String {
 /// directory rather than a Windows path; the standard Git-bash locations are tried explicitly
 /// because a plain test process on a Windows runner has no shell on PATH.
 pub fn run_script(script: &Path, direct_cwd: &Path) -> std::io::Result<std::process::Output> {
+    run_script_with_args(script, direct_cwd, &[])
+}
+
+/// Run a workspace script with arguments, capturing its output.
+pub fn run_script_with_args(
+    script: &Path,
+    direct_cwd: &Path,
+    args: &[&str],
+) -> std::io::Result<std::process::Output> {
     use std::process::Command;
-    if let Ok(out) = Command::new(script).current_dir(direct_cwd).output() {
+    if let Ok(out) = Command::new(script)
+        .args(args)
+        .current_dir(direct_cwd)
+        .output()
+    {
         return Ok(out);
     }
+    let (shell, name, parent) = shell_for(script)?;
+    Command::new(shell)
+        .arg(&name)
+        .args(args)
+        .current_dir(&parent)
+        .output()
+}
+
+/// Run a workspace script with arguments, letting its own output go straight through (a finder's
+/// answers must reach the user, not be captured).
+pub fn run_script_status(
+    script: &Path,
+    direct_cwd: &Path,
+    args: &[&str],
+) -> std::io::Result<std::process::ExitStatus> {
+    use std::process::Command;
+    if let Ok(st) = Command::new(script)
+        .args(args)
+        .current_dir(direct_cwd)
+        .status()
+    {
+        return Ok(st);
+    }
+    let (shell, name, parent) = shell_for(script)?;
+    Command::new(shell)
+        .arg(&name)
+        .args(args)
+        .current_dir(&parent)
+        .status()
+}
+
+/// The shell that may run `script`, the script's name and its directory. Only a shell that proves it
+/// can run a script where the script lives counts: the WSL bridge answers 0 having done nothing,
+/// which would let a red checker pass (2026-11-17).
+fn shell_for(
+    script: &Path,
+) -> std::io::Result<(&'static str, std::ffi::OsString, std::path::PathBuf)> {
     let parent = script.parent().unwrap_or(Path::new(".")).to_path_buf();
     let name = script
         .file_name()
         .map(std::ffi::OsString::from)
         .unwrap_or_default();
-    // Git bash FIRST on Windows: the `bash` a Windows host resolves may be WSL's stub, which
-    // fails with "no installed distributions" when there is no distro.
-    const SHELLS: [&str; 5] = [
-        r"C:\Program Files\Git\bin\bash.exe",
-        r"C:\Program Files\Git\usr\bin\bash.exe",
-        r"C:\Program Files (x86)\Git\bin\bash.exe",
-        "bash",
-        "sh",
-    ];
-    // Only a shell that proves it can run a script in the gate's own directory may run the gate:
-    // the WSL bridge answers 0 having done nothing, which would let a red checker pass (2026-11-17).
-    for shell in SHELLS {
-        if !shell_runs_a_script(shell, &parent) {
-            continue;
-        }
-        return Command::new(shell).arg(&name).current_dir(&parent).output();
+    match shells_for_gate()
+        .into_iter()
+        .find(|s| shell_runs_a_script(s, &parent))
+    {
+        Some(shell) => Ok((shell, name, parent)),
+        None => Err(std::io::Error::other(
+            "no usable shell to run the gate (on Windows install Git for Windows)",
+        )),
     }
-    Err(std::io::Error::other(
-        "no usable shell to run the gate (on Windows install Git for Windows)",
-    ))
 }
 
 #[cfg(test)]

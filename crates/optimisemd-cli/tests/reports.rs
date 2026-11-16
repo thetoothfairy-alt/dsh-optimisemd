@@ -601,6 +601,32 @@ fn find_runs_the_finder_and_reindexes() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("stub index"));
 }
 
+// A finder that is only a script (no executable bit on unix, no runnable type on Windows) is run
+// through a shell: the direct spawn fails and the fallback must still answer (CI caught this on
+// Windows, where a script finder could not be spawned at all).
+#[test]
+fn find_runs_a_finder_that_is_only_a_script() {
+    if !optimisemd_core::util::shell_available() {
+        return no_shell("find running a script-only finder");
+    }
+    let root = temp("find-script-only");
+    let home = temp("find-script-only-home");
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    // Deliberately no chmod: on unix this is not executable, on Windows it is not runnable.
+    std::fs::write(
+        root.join("bin/dsh-belfind"),
+        "#!/usr/bin/env bash\nprintf 'stub %s\\n' \"$*\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("memory/logs")).unwrap();
+    for f in ["session-digest.md", "memento-export.md", "find-index.json"] {
+        std::fs::write(root.join("memory/logs").join(f), "").unwrap();
+    }
+    let out = run(&root, &home, &["find", "hello", "world"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("stub find hello world"), "{text}");
+}
+
 #[test]
 fn find_refuses_without_the_finder_binary() {
     let root = temp("find-bare");

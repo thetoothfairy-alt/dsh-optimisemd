@@ -684,12 +684,27 @@ fn finder(root: &Path) -> Option<PathBuf> {
     built.exists().then_some(built)
 }
 
+/// Run the finder: a real executable, or — when the workspace ships the finder as a script (no
+/// executable bit on unix, no handleable file type on Windows) — through a shell that can run it.
+fn run_finder(
+    bin: &Path,
+    root: &Path,
+    args: &[&str],
+) -> Result<std::process::ExitStatus, Box<dyn std::error::Error>> {
+    let mut direct = Command::new(bin);
+    direct.args(args).current_dir(root);
+    match direct.status() {
+        Ok(st) => Ok(st),
+        Err(_) => Ok(optimisemd_core::util::run_script_status(bin, root, args)?),
+    }
+}
+
 fn index(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
     let Some(bin) = finder(root) else {
         eprintln!("index: no dsh-belfind binary: (cd tools/belfind && cargo build --release)");
         return Ok(2);
     };
-    let status = Command::new(bin).arg("index").current_dir(root).status()?;
+    let status = run_finder(&bin, root, &["index"])?;
     Ok(status.code().unwrap_or(1))
 }
 
@@ -724,17 +739,16 @@ fn find(root: &Path, reindex: bool, query: Vec<String>) -> Result<i32, Box<dyn s
             eprintln!("warning: session digest could not be regenerated — historical search may be incomplete: {e}");
         }
         let _ = export_inner(root);
-        let _ = Command::new(&bin).arg("index").current_dir(root).status();
+        let _ = run_finder(&bin, root, &["index"]);
     }
-    let mut cmd = Command::new(&bin);
-    cmd.current_dir(root);
+    let mut args: Vec<&str> = Vec::new();
     if reindex {
-        cmd.arg("index");
+        args.push("index");
     } else {
-        cmd.arg("find");
+        args.push("find");
     }
-    cmd.args(&query);
-    let status = cmd.status()?;
+    args.extend(query.iter().map(|q| q.as_str()));
+    let status = run_finder(&bin, root, &args)?;
     Ok(status.code().unwrap_or(1))
 }
 
