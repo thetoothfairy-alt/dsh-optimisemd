@@ -9,21 +9,64 @@ use std::path::Path;
 use std::process::Command;
 
 pub fn local_now() -> String {
-    Command::new("date")
-        .arg("+%Y-%m-%d %H:%M")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
+    optimisemd_core::local_now()
 }
 
 pub(crate) fn local_datetime(epoch: i64) -> String {
-    Command::new("date")
-        .args(["-d", &format!("@{epoch}"), "+%Y-%m-%d %H:%M"])
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
+    optimisemd_core::local_datetime(epoch)
+}
+
+/// One definition of "this transcript is a real session": a recognised session event anywhere in
+/// it. The index and the digest share it, so the two reports can never disagree on which sessions
+/// exist (they did: the index truncated before looking, the digest did not).
+fn has_session_event(text: &str) -> bool {
+    text.lines().any(|l| {
+        serde_json::from_str::<serde_json::Value>(l)
+            .map(|v| {
+                v.get("type")
+                    .and_then(|t| t.as_str())
+                    .map(|t| {
+                        matches!(
+                            t,
+                            "session/title"
+                                | "session/title-set"
+                                | "session/start"
+                                | "request/header"
+                                | "user/message"
+                                | "agent/inbox/spliced"
+                        )
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// The workspace a transcript belongs to, when it records one: its `session` event carries `cwd`.
+fn transcript_cwd(text: &str) -> Option<String> {
+    for line in text.lines().take(5) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) == Some("session") {
+            return v.get("cwd").and_then(|c| c.as_str()).map(|s| s.to_string());
+        }
+    }
+    None
+}
+
+/// A transcript counts only when it belongs to THIS workspace — when it says which one it is.
+/// Two different roots can map to the same session folder name; without this, one workspace's
+/// reports would list another workspace's sessions.
+fn belongs_to(text: &str, root: &Path) -> bool {
+    match transcript_cwd(text) {
+        Some(cwd) => {
+            let a = std::fs::canonicalize(&cwd).unwrap_or_else(|_| Path::new(&cwd).to_path_buf());
+            let b = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+            a == b
+        }
+        None => true,
+    }
 }
 
 fn dsh_home() -> String {
@@ -175,10 +218,38 @@ fn unescape(s: &str) -> String {
             Some('\\') => out.push('\\'),
             Some('u') => {
                 let hex: String = (0..4).filter_map(|_| chars.next()).collect();
-                if let Ok(code) = u32::from_str_radix(&hex, 16) {
-                    if let Some(ch) = char::from_u32(code) {
-                        out.push(ch);
+                match u32::from_str_radix(&hex, 16) {
+                    Ok(code) if (0xD800..=0xDBFF).contains(&code) => {
+                        // A surrogate pair (\ud83d\ude00) is one character. Before v0.4.8 both
+                        // halves were dropped and session titles lost their emoji.
+                        let mut pair = chars.clone();
+                        let shaped = pair.next() == Some('\\') && pair.next() == Some('u');
+                        let lo: String = if shaped {
+                            (0..4).filter_map(|_| pair.next()).collect()
+                        } else {
+                            String::new()
+                        };
+                        if let Ok(lo) = u32::from_str_radix(&lo, 16) {
+                            if (0xDC00..=0xDFFF).contains(&lo) {
+                                chars = pair;
+                                if let Some(ch) = char::from_u32(
+                                    0x10000 + ((code - 0xD800) << 10) + (lo - 0xDC00),
+                                ) {
+                                    out.push(ch);
+                                }
+                                continue;
+                            }
+                        }
+                        if let Some(ch) = char::from_u32(code) {
+                            out.push(ch);
+                        }
                     }
+                    Ok(code) => {
+                        if let Some(ch) = char::from_u32(code) {
+                            out.push(ch);
+                        }
+                    }
+                    Err(_) => {}
                 }
             }
             Some(other) => out.push(other),
@@ -201,28 +272,12 @@ pub fn session_index(root: &Path, check: bool) -> Result<i32, Box<dyn std::error
         let Some(text) = transcript_text(log) else {
             continue;
         };
-        let text: String = text.chars().take(200_000).collect();
-        let has_event = text.lines().any(|l| {
-            serde_json::from_str::<serde_json::Value>(l)
-                .map(|v| {
-                    v.get("type")
-                        .and_then(|t| t.as_str())
-                        .map(|t| {
-                            matches!(
-                                t,
-                                "session/title"
-                                    | "session/title-set"
-                                    | "session/start"
-                                    | "request/header"
-                                    | "user/message"
-                                    | "agent/inbox/spliced"
-                            )
-                        })
-                        .unwrap_or(false)
-                })
-                .unwrap_or(false)
-        });
-        if !has_event {
+        if !belongs_to(&text, root) {
+            continue;
+        }
+        // The whole transcript counts: truncating before this look once made the index and the
+        // digest disagree about which sessions exist (check-report-parity is the nightly guard).
+        if !has_session_event(&text) {
             continue;
         }
         let sid = log
@@ -342,7 +397,7 @@ pub fn session_index(root: &Path, check: bool) -> Result<i32, Box<dyn std::error
         total / 1024 / 1024,
         archived
     ));
-    fs::write(&out, format!("{}\n", lines.join("\n")))?;
+    optimisemd_core::write_atomic(&out, &format!("{}\n", lines.join("\n")))?;
     println!(
         "wrote {}: {} sessions, {} MB",
         out.display(),
@@ -508,9 +563,9 @@ pub fn session_commits(root: &Path, days: &str) -> Result<i32, Box<dyn std::erro
         unjoined.len(),
         machine.len()
     ));
-    fs::write(
-        root.join("docs/session-commits.md"),
-        format!("{}\n", lines.join("\n")),
+    optimisemd_core::write_atomic(
+        &root.join("docs/session-commits.md"),
+        &format!("{}\n", lines.join("\n")),
     )?;
     println!(
         "wrote docs/session-commits.md: {} commits, {} sessions joined, {} unjoined",
@@ -605,9 +660,9 @@ pub fn memory_log_index(root: &Path) -> Result<i32, Box<dyn std::error::Error>> 
     lines.push(String::new());
     lines.push(format!("**{} days · {} MB of logs.** A day with no headings says so by having none — that is the signal to go and read it.",
         rows.len(), total / 1024 / 1024));
-    fs::write(
-        root.join("docs/memory-log-index.md"),
-        format!("{}\n", lines.join("\n")),
+    optimisemd_core::write_atomic(
+        &root.join("docs/memory-log-index.md"),
+        &format!("{}\n", lines.join("\n")),
     )?;
     println!(
         "wrote docs/memory-log-index.md: {} days, {} MB",
@@ -646,27 +701,10 @@ pub fn session_digest(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
         } else {
             folder.clone()
         };
-        let has_event = text.lines().any(|l| {
-            serde_json::from_str::<serde_json::Value>(l)
-                .map(|v| {
-                    v.get("type")
-                        .and_then(|t| t.as_str())
-                        .map(|t| {
-                            matches!(
-                                t,
-                                "session/title"
-                                    | "session/title-set"
-                                    | "session/start"
-                                    | "request/header"
-                                    | "user/message"
-                                    | "agent/inbox/spliced"
-                            )
-                        })
-                        .unwrap_or(false)
-                })
-                .unwrap_or(false)
-        });
-        if !has_event {
+        if !belongs_to(&text, root) {
+            continue;
+        }
+        if !has_session_event(&text) {
             continue;
         }
         let mut title = String::new();
@@ -819,7 +857,7 @@ pub fn session_digest(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
         body.push_str(r);
         body.push('\n');
     }
-    fs::write(root.join("memory/logs/session-digest.md"), body)?;
+    optimisemd_core::write_atomic(&root.join("memory/logs/session-digest.md"), &body)?;
     println!(
         "wrote memory/logs/session-digest.md: {} sessions",
         rows.len()
@@ -911,5 +949,16 @@ mod tests {
         assert!(is_machine("Auto backup 2026-11-11 03:00"));
         assert!(is_machine("nightly: refresh the measured counts"));
         assert!(!is_machine("Fix the portal"));
+    }
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
+
+    #[test]
+    fn unescape_keeps_emoji_surrogate_pairs() {
+        assert_eq!(unescape(r"\ud83d\ude00"), "😀");
+        assert_eq!(unescape("plain \\u0041 text"), "plain A text");
     }
 }

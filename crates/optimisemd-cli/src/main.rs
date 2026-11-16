@@ -328,7 +328,7 @@ fn promote(root: &Path, a: PromoteArgs) -> Result<i32, Box<dyn std::error::Error
                 report.demote.len(),
                 report.promote.len()
             ));
-            std::fs::write(&path, body)?;
+            optimisemd_core::write_atomic(&path, &body)?;
             println!("candidates written to memory/logs/promotion-candidates.md");
             println!(
                 "{} demote candidates · {} promote candidates",
@@ -352,6 +352,10 @@ fn promote(root: &Path, a: PromoteArgs) -> Result<i32, Box<dyn std::error::Error
             report.backup.as_deref().unwrap_or("(none)")
         );
     }
+    if a.dry_run {
+        // A dry run wrote nothing: no gate to run, no audit line claiming an apply.
+        return Ok(0);
+    }
     let touched = vec![
         "MEMORY.md".to_string(),
         report
@@ -359,23 +363,34 @@ fn promote(root: &Path, a: PromoteArgs) -> Result<i32, Box<dyn std::error::Error
             .clone()
             .unwrap_or_else(|| "(no backup)".to_string()),
     ];
-    let check = run_check(root)?;
+    // The gate must RUN for the move to stand: a gate that cannot run is a failed gate, and the
+    // backup is restored rather than leaving unverified changes behind.
+    let check = run_check(root).unwrap_or(2);
     if check != 0 {
         eprintln!("dsh-optimisemd: the index check failed — restoring the backup");
         if let Some(b) = &report.backup {
-            let _ = std::fs::copy(Path::new(b).join("MEMORY.md"), root.join("MEMORY.md"));
-            for entry in std::fs::read_dir(b).into_iter().flatten().flatten() {
-                let p = entry.path();
-                if p.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .as_deref()
-                    == Some("MEMORY.md")
-                {
+            // Restore every file to its own relative path: MEMORY.md and the parts under
+            // docs/memory-details/, exactly as the backup recorded them.
+            let backup_root = Path::new(b);
+            let mut restore_err = String::new();
+            let mut stack = vec![(backup_root.to_path_buf(), root.to_path_buf())];
+            while let Some((from, to)) = stack.pop() {
+                let Ok(entries) = std::fs::read_dir(&from) else {
                     continue;
+                };
+                for entry in entries.flatten() {
+                    let src = entry.path();
+                    let dst = to.join(entry.file_name());
+                    if src.is_dir() {
+                        std::fs::create_dir_all(&dst).ok();
+                        stack.push((src, dst));
+                    } else if let Err(e) = std::fs::copy(&src, &dst) {
+                        restore_err = format!("{}: {e}", dst.display());
+                    }
                 }
-                if let Some(name) = p.file_name() {
-                    let _ = std::fs::copy(&p, root.join("docs/memory-details").join(name));
-                }
+            }
+            if !restore_err.is_empty() {
+                eprintln!("dsh-optimisemd: RESTORE FAILED — {restore_err}; backup kept at {b}");
             }
         }
         let _ = optimisemd_core::audit::record(root, "promote-apply", "rolled-back", &touched);
@@ -386,6 +401,14 @@ fn promote(root: &Path, a: PromoteArgs) -> Result<i32, Box<dyn std::error::Error
 }
 
 fn tier0(root: &Path, args: Tier0Args) -> Result<i32, Box<dyn std::error::Error>> {
+    let writes = matches!(
+        args.cmd,
+        Tier0Cmd::Add(_)
+            | Tier0Cmd::Replace(_)
+            | Tier0Cmd::Remove(_)
+            | Tier0Cmd::Merge(_)
+            | Tier0Cmd::Import { .. }
+    );
     let path = match args.cmd {
         Tier0Cmd::Add(_) | Tier0Cmd::Merge(_) | Tier0Cmd::Import { .. } => store_path_write(),
         _ => store_path_read(),
@@ -394,7 +417,12 @@ fn tier0(root: &Path, args: Tier0Args) -> Result<i32, Box<dyn std::error::Error>
         eprintln!("tier0: no store found (DSH_HOME not set and no ~/.dsh store)");
         return Ok(2);
     };
-    let store = Store::open(&path, Default::default())?;
+    // Read commands open the store read-only: listing or verifying must never create or touch it.
+    let store = if writes {
+        Store::open(&path, Default::default())?
+    } else {
+        Store::open_readonly(&path)?
+    };
     match args.cmd {
         Tier0Cmd::List => {
             let entries = store.list_entries()?;
@@ -484,7 +512,9 @@ fn tier0(root: &Path, args: Tier0Args) -> Result<i32, Box<dyn std::error::Error>
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            let backup = path.with_file_name(format!("memory.db.bak-{stamp}"));
+            // Seconds plus the process id: two merges in one second no longer share a backup name.
+            let backup =
+                path.with_file_name(format!("memory.db.bak-{stamp}-{}", std::process::id()));
             store.backup_to(&backup)?;
             println!("backup: {}", backup.display());
             let id = store.merge(&m.matches, &m.track, &m.scope, &m.text, &tags, "cli")?;
@@ -512,7 +542,15 @@ fn verify(
     } else if user * 100 / user_cap.max(1) >= 80 || agent * 100 / agent_cap.max(1) >= 80 {
         eprintln!("warn: budget user {user}/{user_cap}, agent {agent}/{agent_cap} (past 80%)");
     }
-    let memory = std::fs::read_to_string(root.join("MEMORY.md")).unwrap_or_default();
+    let memory = match std::fs::read_to_string(root.join("MEMORY.md")) {
+        Ok(m) => m,
+        Err(e) => {
+            findings.push(format!(
+                "[0] MEMORY.md cannot be read ({e}) — this check cannot see its input and must not pass"
+            ));
+            String::new()
+        }
+    };
     let rows = optimisemd_core::promo::parse_rows(&memory);
     let stop: [&str; 12] = [
         "that", "this", "with", "from", "they", "have", "when", "what", "were", "will", "into",
@@ -557,7 +595,9 @@ fn verify(
     }
     let export =
         std::fs::read_to_string(root.join("memory/logs/memento-export.md")).unwrap_or_default();
-    let exported = export.lines().filter(|l| l.starts_with("- ")).count();
+    // One exported row per stored entry — counting entry rows, not every line that starts with a
+    // dash (an entry whose text carried a newline used to flip this check).
+    let exported = export.lines().filter(|l| l.starts_with("- **")).count();
     if exported != entries.len() {
         findings.push(format!("[4] the find export lists {exported} of {} stored entries — run: dsh-optimisemd export", entries.len()));
     }
@@ -660,9 +700,11 @@ fn find(root: &Path, reindex: bool, query: Vec<String>) -> Result<i32, Box<dyn s
     };
     let mut reindex = reindex;
     let mut query = query;
-    if query.first().map(|q| q == "index").unwrap_or(false) {
+    // `find index` (the whole query) is the reindex shorthand; a QUESTION beginning with the word
+    // "index" is a question and reaches the finder unchanged.
+    if query.len() == 1 && query[0] == "index" {
         reindex = true;
-        query.remove(0);
+        query.clear();
     }
     if !reindex && query.is_empty() {
         let mut cmd = Cli::command();
@@ -708,15 +750,9 @@ fn export_inner(root: &Path) -> Result<usize, Box<dyn std::error::Error>> {
     let Some(src) = store_path_read() else {
         return Ok(0);
     };
-    let tmp = std::env::temp_dir().join(format!("optimisemd-export-{}.db", std::process::id()));
-    std::fs::copy(&src, &tmp)?;
-    for suffix in ["-wal", "-shm"] {
-        let side = PathBuf::from(format!("{}{}", src.display(), suffix));
-        if side.exists() {
-            let _ = std::fs::copy(&side, PathBuf::from(format!("{}{}", tmp.display(), suffix)));
-        }
-    }
-    let store = Store::open(&tmp, Default::default())?;
+    // A read-only handle reads a CONSISTENT snapshot through SQLite; the old copy of database,
+    // -wal and -shm files at three instants could tear and left working files in the temp dir.
+    let store = Store::open_readonly(&src)?;
     let entries = store.list_entries()?;
     let out = root.join("memory/logs/memento-export.md");
     std::fs::create_dir_all(out.parent().unwrap_or(Path::new(".")))?;
@@ -733,8 +769,7 @@ fn export_inner(root: &Path) -> Result<usize, Box<dyn std::error::Error>> {
             e.text.trim()
         ));
     }
-    std::fs::write(&out, body)?;
-    let _ = std::fs::remove_file(&tmp);
+    optimisemd_core::write_atomic(&out, &body)?;
     Ok(entries.len())
 }
 

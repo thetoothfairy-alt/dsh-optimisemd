@@ -72,11 +72,37 @@ pub struct Repo {
 }
 
 fn pointer_ok(p: &str) -> bool {
+    // The pointer is written into a row and later joined to the root: it must stay inside the
+    // repository, carry no shell of its own, and belong to one of the four documented families.
+    if p.contains("..")
+        || p.contains('`')
+        || p.contains('\n')
+        || p.contains('\r')
+        || p.contains('\\')
+    {
+        return false;
+    }
     p.starts_with("docs/memory-details/")
         || p.starts_with("docs/runbooks/")
         || p.starts_with("skills/")
         || p == "docs/hard-won.md"
         || p.starts_with("docs/hard-won/")
+}
+
+/// A detail-part file name: one path component under `docs/memory-details/`, nothing else. This is
+/// joined to the root before writing, so `..`, separators and absolute paths are refused here.
+fn part_ok(p: &str) -> bool {
+    !p.is_empty()
+        && p.ends_with(".md")
+        && !p.contains("..")
+        && !p.contains('/')
+        && !p.contains('\\')
+        && !p.contains('\n')
+        && !p.contains('\r')
+}
+
+fn one_line(s: &str) -> bool {
+    !s.contains('\n') && !s.contains('\r')
 }
 
 impl Repo {
@@ -114,14 +140,63 @@ impl Repo {
                 text.chars().count()
             )));
         }
+        if !one_line(text) {
+            return Err(RepoError::Invalid(
+                "the row text must be one line — no newline".into(),
+            ));
+        }
+        // Every date that reaches a write is a real calendar date: a wrong one would create a file
+        // at a wrong path and date a row untruthfully.
+        if !valid_date(date) {
+            return Err(RepoError::Invalid(format!(
+                "date must be a real YYYY-MM-DD calendar date, got {date:?}"
+            )));
+        }
         if !pointer_ok(pointer) {
             return Err(RepoError::Pointer(pointer.to_string()));
         }
+        if let Some(p) = part {
+            if !part_ok(p) {
+                return Err(RepoError::Invalid(format!(
+                    "part must be one file name like 01-subject.md inside docs/memory-details, got {p:?}"
+                )));
+            }
+        }
+        if let Some(s) = slug {
+            if s.is_empty()
+                || !s
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                || s.contains('\n')
+            {
+                return Err(RepoError::Invalid(format!(
+                    "slug must be lowercase letters, digits and dashes, got {s:?}"
+                )));
+            }
+        }
+        if let Some(d) = detail {
+            if d.contains("\n##") {
+                return Err(RepoError::Invalid(
+                    "detail must not smuggle headings (no line starting with ##)".into(),
+                ));
+            }
+        }
         let memory = self.memory_path();
-        let mut body = fs::read_to_string(&memory)?;
+        let body = fs::read_to_string(&memory)?;
+        // Duplicate = the same fact already in a ROW. Prose or a heading that happens to quote the
+        // words is not an index row, and rows sharing only a long opening are two rows, not one.
         let needle: String = text.chars().take(60).collect();
-        if body.contains(&needle) {
-            return Err(RepoError::Duplicate(needle));
+        for line in body.lines() {
+            let Some(rest) = line.strip_prefix("- **") else {
+                continue;
+            };
+            let Some(mid) = rest.find("** (") else {
+                continue;
+            };
+            let t = &rest[..mid];
+            if t == text || t.starts_with(&needle) {
+                return Err(RepoError::Duplicate(needle));
+            }
         }
         let row = format!("- **{text}** ({date}) — `{pointer}`");
         let heading = section.unwrap_or(DEFAULT_SECTION).trim().to_string();
@@ -137,28 +212,39 @@ impl Repo {
                 while j < lines.len() && !lines[j].starts_with("## ") {
                     j += 1;
                 }
-                lines.insert(j, row.clone());
+                // The row joins the section's content: before any trailing blanks, keeping one
+                // blank line between it and the next heading.
+                let mut k = j;
+                while k > i + 1 && lines[k - 1].trim().is_empty() {
+                    k -= 1;
+                }
+                lines.insert(k, row.clone());
+                if k + 1 < lines.len() && lines[k + 1].starts_with("## ") {
+                    lines.insert(k + 1, String::new());
+                }
             }
             None => {
                 // A named section that does not exist yet is created before Subject facts, as before. With no Subject
                 // facts either, nothing can place the row safely — name the headings instead of writing a row outside
-                // every section (the index gate refuses that, 2026-11-14).
+                // every section (the index gate refuses that, 2026-11-14). The row goes INSIDE its
+                // own section, never above its heading.
                 let Some(at) = lines.iter().position(|l| l.trim() == DEFAULT_SECTION) else {
                     return Err(RepoError::Invalid(format!(
                         "no `{heading}` section in MEMORY.md — pass section with one of: {}",
                         headings.join(", ")
                     )));
                 };
-                lines.insert(at, row.clone());
+                lines.insert(at, heading.clone());
                 lines.insert(at + 1, String::new());
-                lines.insert(at + 2, heading.clone());
+                lines.insert(at + 2, row.clone());
+                lines.insert(at + 3, String::new());
             }
         }
-        body = lines.join("\n");
+        let mut body = lines.join("\n");
         if !body.ends_with('\n') {
             body.push('\n');
         }
-        fs::write(&memory, body)?;
+        crate::util::write_atomic(&memory, &body)?;
 
         let mut written = Written {
             row: row.clone(),
@@ -176,8 +262,7 @@ impl Repo {
                 part_body.push('\n');
             }
             part_body.push_str(&format!("\n### §{slug}\n\n{}\n", detail.trim()));
-            fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
-            fs::write(&path, part_body)?;
+            crate::util::write_atomic(&path, &part_body)?;
             written.part = Some(path.display().to_string());
         }
         self.append_day(date, &format!("{text} — `{pointer}`"))?;
@@ -212,18 +297,51 @@ impl Repo {
             saved.push((mem.clone(), dst));
         }
         if let Some(p) = &part_path {
-            if p.exists() {
-                let dst = backup.join(p.file_name().unwrap());
+            if p.exists() && p.is_file() {
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "part.md".into());
+                let dst = backup.join(name);
                 std::fs::copy(p, &dst)?;
                 saved.push((p.clone(), dst));
             }
         }
-        if day_path.exists() {
-            let dst = backup.join(day_path.file_name().unwrap());
+        if day_path.exists() && day_path.is_file() {
+            let name = day_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "day.md".into());
+            let dst = backup.join(name);
             std::fs::copy(&day_path, &dst)?;
             saved.push((day_path.clone(), dst));
         }
-        let written = self.save(text, date, pointer, section, part, slug, detail)?;
+        // Restore every tracked file and remove the ones this save created. Used both when the write
+        // itself fails partway and when the gate refuses the result.
+        let restore = |saved: &[(PathBuf, PathBuf)]| -> std::io::Result<()> {
+            for (orig, copy) in saved {
+                std::fs::copy(copy, orig)?;
+            }
+            if !saved.iter().any(|(o, _)| o == &day_path) && day_path.exists() {
+                std::fs::remove_file(&day_path)?;
+            }
+            if let Some(p) = &part_path {
+                if !saved.iter().any(|(o, _)| o == p) && p.exists() {
+                    std::fs::remove_file(p)?;
+                }
+            }
+            Ok(())
+        };
+        let written = match self.save(text, date, pointer, section, part, slug, detail) {
+            Ok(w) => w,
+            Err(e) => {
+                // A save that fails after MEMORY.md was written must not leave the row behind.
+                let _ = restore(&saved);
+                let _ =
+                    crate::audit::record(&self.root, "save", "rolled-back", &["MEMORY.md".into()]);
+                return Err(e);
+            }
+        };
         let mut touched: Vec<String> = vec!["MEMORY.md".into()];
         if let Some(p) = part {
             touched.push(format!("docs/memory-details/{p}"));
@@ -242,17 +360,12 @@ impl Repo {
             let _ = crate::audit::record(&self.root, "save", "applied", &touched);
             return Ok(written);
         }
-        // restore every tracked file, and remove the files this save created that had no prior copy
-        for (orig, copy) in &saved {
-            let _ = std::fs::copy(copy, orig);
-        }
-        if !saved.iter().any(|(o, _)| o == &day_path) && day_path.exists() {
-            let _ = std::fs::remove_file(&day_path);
-        }
-        if let Some(p) = &part_path {
-            if !saved.iter().any(|(o, _)| o == p) && p.exists() {
-                let _ = std::fs::remove_file(p);
-            }
+        if let Err(e) = restore(&saved) {
+            let _ = crate::audit::record(&self.root, "save", "rollback-failed", &touched);
+            return Err(RepoError::Invalid(format!(
+                "the index check failed and the rollback also failed ({e}) — inspect MEMORY.md and the backup at {}",
+                backup.display()
+            )));
         }
         // Report WHY, not just that it failed: the checker's findings are the reason, and a generic message sends the
         // session hunting through files it may not have touched (the summary line is dropped).
@@ -300,12 +413,26 @@ impl Repo {
                 text.chars().count()
             )));
         }
+        if !one_line(text) {
+            return Err(RepoError::Invalid(
+                "the row text must be one line — no newline".into(),
+            ));
+        }
+        if !valid_date(date) {
+            return Err(RepoError::Invalid(format!(
+                "date must be a real YYYY-MM-DD calendar date, got {date:?}"
+            )));
+        }
         if !pointer_ok(pointer) {
             return Err(RepoError::Pointer(pointer.to_string()));
         }
         let memory = self.memory_path();
         let body = fs::read_to_string(&memory)?;
-        let hits: Vec<&str> = body.lines().filter(|l| l.contains(needle)).collect();
+        // Only rows are candidates: a heading or a paragraph that quotes the words is not a row.
+        let hits: Vec<&str> = body
+            .lines()
+            .filter(|l| l.starts_with("- **") && l.contains(needle))
+            .collect();
         if hits.is_empty() {
             return Err(RepoError::Invalid(format!("no row contains {needle:?}")));
         }
@@ -317,8 +444,20 @@ impl Repo {
         }
         let old = hits[0];
         let row = format!("- **{text}** ({date}) — `{pointer}`");
-        let new_body = body.replace(old, &row);
-        fs::write(&memory, new_body)?;
+        // Line-based replacement: the words may also appear in prose that must not move.
+        let new_body: String = body
+            .lines()
+            .map(|l| if l == old { row.as_str() } else { l })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        crate::util::write_atomic(&memory, &new_body)?;
+        let _ = crate::audit::record(
+            &self.root,
+            "supersede",
+            "applied",
+            &["MEMORY.md".to_string()],
+        );
         Ok(row)
     }
 
@@ -328,9 +467,9 @@ impl Repo {
 
     /// Append the day's line; create the day file with its title. Append-only, never rewritten.
     pub fn append_day(&self, date: &str, text: &str) -> Result<PathBuf, RepoError> {
-        if !date.chars().all(|c| c.is_ascii_digit() || c == '-') || date.len() != 10 {
+        if !valid_date(date) {
             return Err(RepoError::Invalid(format!(
-                "date must be YYYY-MM-DD, got {date:?}"
+                "date must be a real YYYY-MM-DD calendar date, got {date:?}"
             )));
         }
         let path = self.day_path(date);
@@ -627,6 +766,224 @@ mod tests {
         assert!(body.starts_with("# 2026-11-13"));
         assert!(body.contains("- first line"));
         assert!(body.contains("- second line"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+
+    fn workspace(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("optimisemd-repo-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("docs/memory-details")).unwrap();
+        fs::create_dir_all(dir.join("memory")).unwrap();
+        fs::write(dir.join("MEMORY.md"), "# MEMORY.md\n\n## Read these first\n- **Never touch the live service.** (2026-01-01) — `docs/hard-won.md`\n\n## Subject facts\n- **An existing row.** (2026-01-01) — `docs/memory-details/01.md`\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_supplied_date_is_calendar_checked() {
+        let dir = workspace("baddate");
+        let repo = Repo::new(&dir);
+        assert!(matches!(
+            repo.save(
+                "A fact.",
+                "2026-02-30",
+                "docs/memory-details/01.md",
+                None,
+                None,
+                None,
+                None
+            ),
+            Err(RepoError::Invalid(_))
+        ));
+        assert!(matches!(
+            repo.append_day("2026-99-99", "a line"),
+            Err(RepoError::Invalid(_))
+        ));
+        assert!(matches!(
+            repo.supersede(
+                "An existing row",
+                "Corrected.",
+                "2026-13-01",
+                "docs/memory-details/01.md"
+            ),
+            Err(RepoError::Invalid(_))
+        ));
+        assert!(!dir.join("memory/2026-02-30.md").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_part_cannot_escape_the_parts_directory() {
+        let dir = workspace("escape");
+        let repo = Repo::new(&dir);
+        assert!(matches!(
+            repo.save(
+                "A fact.",
+                "2026-11-13",
+                "docs/memory-details/01.md",
+                None,
+                Some("../../evil.md"),
+                Some("slug"),
+                Some("detail")
+            ),
+            Err(RepoError::Invalid(_))
+        ));
+        assert!(!dir.join("evil.md").exists());
+        // A part that ends in ".." once panicked on file_name().unwrap(); it must refuse instead.
+        assert!(repo
+            .save_checked(
+                "A fact.",
+                "2026-11-13",
+                "docs/memory-details/01.md",
+                None,
+                Some(".."),
+                Some("slug"),
+                Some("detail")
+            )
+            .is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pointer_cannot_point_outside_the_repo() {
+        let dir = workspace("pointer");
+        let repo = Repo::new(&dir);
+        for pointer in [
+            "docs/memory-details/../../x.md",
+            "docs/runbooks/../secrets.md",
+            "docs/hard-won.md` and more",
+            "docs/runbooks/a\nb.md",
+        ] {
+            assert!(
+                matches!(
+                    repo.save("A fact.", "2026-11-13", pointer, None, None, None, None),
+                    Err(RepoError::Pointer(_)),
+                ),
+                "pointer {pointer:?} must be refused"
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_row_must_be_one_line() {
+        let dir = workspace("rowline");
+        let repo = Repo::new(&dir);
+        assert!(matches!(
+            repo.save(
+                "A fact\n- **A smuggled row.** (2026-01-01) — `docs/hard-won.md`",
+                "2026-11-13",
+                "docs/memory-details/01.md",
+                None,
+                None,
+                None,
+                None
+            ),
+            Err(RepoError::Invalid(_))
+        ));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_new_section_holds_its_row() {
+        let dir = workspace("newsec");
+        let repo = Repo::new(&dir);
+        repo.save(
+            "A preference the owner stated.",
+            "2026-11-13",
+            "docs/memory-details/01.md",
+            Some("## Owner preferences"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let body = fs::read_to_string(dir.join("MEMORY.md")).unwrap();
+        let heading = body.find("## Owner preferences").unwrap();
+        let row = body.find("A preference the owner stated.").unwrap();
+        let facts = body.find("## Subject facts").unwrap();
+        assert!(heading < row && row < facts, "{body}");
+        // The row keeps a blank line between itself and the next heading.
+        let after_row = &body[row..];
+        let next_heading = after_row.find("\n## ").unwrap();
+        assert!(after_row[..next_heading].ends_with('\n'), "{body}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicate_detection_scans_rows_not_prose() {
+        let dir = workspace("dupscan");
+        let repo = Repo::new(&dir);
+        // The new row's opening words appear in prose (the preamble), not in any row: it is not a duplicate.
+        let text = "The team library OneDrive stays unlinked after the Dell7050 re-link and is retried monthly";
+        let needle: String = text.chars().take(60).collect();
+        let body = fs::read_to_string(dir.join("MEMORY.md")).unwrap();
+        let body = body.replace(
+            "# MEMORY.md\n",
+            &format!("# MEMORY.md\n\nContext: {needle} …as prose.\n"),
+        );
+        fs::write(dir.join("MEMORY.md"), body).unwrap();
+        repo.save(
+            text,
+            "2026-11-13",
+            "docs/memory-details/01.md",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn supersede_replaces_only_the_row_line() {
+        let dir = workspace("supline");
+        let repo = Repo::new(&dir);
+        let body = fs::read_to_string(dir.join("MEMORY.md")).unwrap();
+        let body = body.replace(
+            "# MEMORY.md\n",
+            "# MEMORY.md\n\nA heading that also mentions An existing row in passing.\n",
+        );
+        fs::write(dir.join("MEMORY.md"), body).unwrap();
+        repo.supersede(
+            "An existing row",
+            "An existing row, corrected.",
+            "2026-11-13",
+            "docs/memory-details/01.md",
+        )
+        .unwrap();
+        let after = fs::read_to_string(dir.join("MEMORY.md")).unwrap();
+        assert!(
+            after.contains("A heading that also mentions An existing row in passing."),
+            "{after}"
+        );
+        assert_eq!(after.matches("An existing row, corrected.").count(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_checked_rolls_back_when_the_write_itself_fails() {
+        let dir = workspace("midfail");
+        // The day path is a directory: MEMORY.md is written first, then the day append fails.
+        fs::create_dir_all(dir.join("memory/2026-11-13.md")).unwrap();
+        let before = fs::read_to_string(dir.join("MEMORY.md")).unwrap();
+        let out = Repo::new(&dir).save_checked(
+            "A fact that must not survive.",
+            "2026-11-13",
+            "docs/memory-details/01.md",
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(out.is_err(), "{out:?}");
+        assert_eq!(fs::read_to_string(dir.join("MEMORY.md")).unwrap(), before);
         let _ = fs::remove_dir_all(&dir);
     }
 }

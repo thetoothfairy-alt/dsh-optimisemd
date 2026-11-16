@@ -1,6 +1,6 @@
 {
   "name": "dsh-optimisemd",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "Tier-0 memory for DSH \u2014 a Rust store (native addon) behind the memory tool and the frozen session snapshot.",
   "type": "module",
   "main": "./index.mjs",
@@ -23,7 +23,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "bash scripts/build-native.sh",
+    "build": "bash scripts/build-native.sh --force",
     "test": "node --test tests/*.test.mjs",
     "prepare": "bash scripts/build-native.sh"
   },
@@ -39,6 +39,10 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.3",
     "@deepseek-ai/dsh-tools": ">=0.2.2-0 <0.3.0",
+    "@deepseek-ai/schemastery": "~3.19.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-tools": "^0.2.2-rc.3",
     "@deepseek-ai/schemastery": "~3.19.0"
   },
   "engines": {

@@ -17,8 +17,32 @@ pub struct AddArgs<'a> {
 
 const MAX_LINE: usize = 250;
 
+/// A landmine part file name: one component under `docs/hard-won/`. It is joined to the root before
+/// writing, so `..`, separators and absolute paths are refused here (they used to reach the join).
+fn part_ok(p: &str) -> bool {
+    !p.is_empty()
+        && p.ends_with(".md")
+        && !p.contains("..")
+        && !p.contains('/')
+        && !p.contains('\\')
+        && !p.contains('\n')
+        && !p.contains('\r')
+}
+
+fn one_line(s: &str) -> bool {
+    !s.contains('\n') && !s.contains('\r')
+}
+
 pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
-    let part = root.join("docs/hard-won").join(a.part);
+    let part_name = a.part.trim();
+    if !part_ok(part_name) {
+        return Err(format!(
+            "part must be one file name like 01-claims.md inside docs/hard-won, got {:?}",
+            a.part
+        )
+        .into());
+    }
+    let part = root.join("docs/hard-won").join(part_name);
     let details = root.join("docs/hard-won-details.md");
     if !part.exists() {
         return Err(format!("no such part: {}", part.display()).into());
@@ -26,12 +50,23 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
     if !details.exists() {
         return Err("docs/hard-won-details.md is missing".into());
     }
-    let line = format!(
-        "- **{}** — {} — §{}",
-        a.text.trim(),
-        a.context.trim(),
-        a.slug.trim()
-    );
+    let slug = a.slug.trim();
+    if slug.is_empty()
+        || !slug
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(format!(
+            "slug must be lowercase letters, digits and dashes, got {:?}",
+            a.slug
+        )
+        .into());
+    }
+    // Each field is one line: a newline would smuggle rows or headings past the cap.
+    if !one_line(a.text) || !one_line(a.context) || !one_line(a.detail) {
+        return Err("text, context and detail must not contain newlines".into());
+    }
+    let line = format!("- **{}** — {} — §{}", a.text.trim(), a.context.trim(), slug);
     if line.chars().count() > MAX_LINE {
         return Err(format!(
             "line is {} characters; the cap is {MAX_LINE}",
@@ -41,8 +76,11 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
     }
     let part_before = fs::read_to_string(&part)?;
     let details_before = fs::read_to_string(&details)?;
-    if part_before.contains(&format!("§{}", a.slug.trim())) {
-        return Err(format!("§{} already appears in that part", a.slug.trim()).into());
+    // The slug is unique across BOTH files: a second `### §slug` heading in the details is a
+    // duplicate address whichever part the line lives in.
+    if part_before.contains(&format!("§{slug}")) || details_before.contains(&format!("### §{slug}"))
+    {
+        return Err(format!("§{slug} is already recorded").into());
     }
     let mut part_after = part_before.clone();
     if !part_after.ends_with('\n') {
@@ -50,21 +88,17 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
     }
     part_after.push_str(&line);
     part_after.push('\n');
-    fs::write(&part, &part_after)?;
+    optimisemd_core::write_atomic(&part, &part_after)?;
 
     let mut details_after = details_before.clone();
     if !details_after.ends_with('\n') {
         details_after.push('\n');
     }
-    details_after.push_str(&format!(
-        "\n### §{}\n\n{}\n",
-        a.slug.trim(),
-        a.detail.trim()
-    ));
-    fs::write(&details, &details_after)?;
+    details_after.push_str(&format!("\n### §{}\n\n{}\n", slug, a.detail.trim()));
+    optimisemd_core::write_atomic(&details, &details_after)?;
 
     let touched = vec![
-        format!("docs/hard-won/{}", a.part),
+        format!("docs/hard-won/{part_name}"),
         "docs/hard-won-details.md".to_string(),
     ];
     let check = Command::new("bash")
@@ -73,8 +107,8 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
         .output();
     let ok = matches!(&check, Ok(o) if o.status.success());
     if !ok {
-        fs::write(&part, part_before)?;
-        fs::write(&details, details_before)?;
+        optimisemd_core::write_atomic(&part, &part_before)?;
+        optimisemd_core::write_atomic(&details, &details_before)?;
         let out = check
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
             .unwrap_or_default();
@@ -85,6 +119,99 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
         return Err("the context guard failed; both files were restored".into());
     }
     let _ = optimisemd_core::audit::record(root, "landmine", "applied", &touched);
-    println!("recorded §{} in docs/hard-won/{}", a.slug.trim(), a.part);
+    println!("recorded §{slug} in docs/hard-won/{part_name}");
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn fixture(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("optimisemd-landmine-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("docs/hard-won")).unwrap();
+        fs::create_dir_all(dir.join("scripts")).unwrap();
+        fs::write(dir.join("docs/hard-won/01.md"), "# Traps\n").unwrap();
+        fs::write(
+            dir.join("docs/hard-won-details.md"),
+            "# Landmine details\n\n### §taken-slug\n\nAlready recorded.\n",
+        )
+        .unwrap();
+        fs::write(dir.join("MEMORY.md"), "# MEMORY.md\n").unwrap();
+        let guard = dir.join("scripts/check-context-files.sh");
+        fs::write(&guard, "#!/usr/bin/env bash\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&guard, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        dir
+    }
+
+    fn args<'a>(part: &'a str, text: &'a str, slug: &'a str) -> AddArgs<'a> {
+        AddArgs {
+            part,
+            text,
+            context: "the context",
+            slug,
+            detail: "the reproduction",
+        }
+    }
+
+    #[test]
+    fn a_part_cannot_escape_the_landmine_store() {
+        let dir = fixture("escape");
+        // ../../MEMORY.md exists through the join today — the line would land outside docs/hard-won.
+        assert!(add(&dir, args("../../MEMORY.md", "A trap.", "a-slug")).is_err());
+        assert!(!fs::read_to_string(dir.join("MEMORY.md"))
+            .unwrap()
+            .contains("A trap."));
+        assert!(add(&dir, args("01.md/../../evil.md", "A trap.", "a-slug")).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn line_fields_cannot_smuggle_rows_or_headings() {
+        let dir = fixture("smuggle");
+        assert!(add(
+            &dir,
+            args("01.md", "A trap.\n- **A smuggled row.**", "a-slug")
+        )
+        .is_err());
+        assert!(add(&dir, args("01.md", "A trap.", "bad slug")).is_err());
+        assert!(add(&dir, args("01.md", "A trap.", "a-slug\n### §another")).is_err());
+        let part = fs::read_to_string(dir.join("docs/hard-won/01.md")).unwrap();
+        assert!(!part.contains("smuggled"), "{part}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_slug_is_unique_across_the_details_too() {
+        let dir = fixture("dupe");
+        // §taken-slug lives in docs/hard-won-details.md but not in the part: adding it again would
+        // create a second `### §taken-slug` heading in the details.
+        assert!(add(&dir, args("01.md", "A trap.", "taken-slug")).is_err());
+        let details = fs::read_to_string(dir.join("docs/hard-won-details.md")).unwrap();
+        assert_eq!(details.matches("### §taken-slug").count(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_valid_landmine_lands_and_is_audited() {
+        let dir = fixture("ok");
+        assert_eq!(
+            add(&dir, args("01.md", "A trap.", "fresh-slug")).unwrap(),
+            0
+        );
+        assert!(fs::read_to_string(dir.join("docs/hard-won/01.md"))
+            .unwrap()
+            .contains("§fresh-slug"));
+        assert!(fs::read_to_string(dir.join("memory/logs/repo-writes.log"))
+            .unwrap()
+            .contains("landmine applied"));
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

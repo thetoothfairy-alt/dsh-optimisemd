@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { loadNative } from '../lib/native.mjs'
+import { localDate } from '../lib/repo-action.mjs'
 
 const { MemoryStore, RepoWriter } = loadNative()
 const fresh = () => {
@@ -43,6 +44,7 @@ test('the Rust addon supplies the tool defaults', () => {
     )
     writeFileSync(join(dir, 'scripts/check-memory-index.sh'), '#!/usr/bin/env bash\nexit 0\n')
     chmodSync(join(dir, 'scripts/check-memory-index.sh'), 0o755)
+    chmodSync(join(dir, 'scripts/check-memory-index.sh'), 0o755)
     const written = new RepoWriter(dir).saveChecked(
       'A saved fact.',
       '',
@@ -61,7 +63,10 @@ test('the Rust addon supplies the tool defaults', () => {
   }
 })
 
-test('a bad date command is refused before any write', () => {
+test('the save date is computed in Rust; no date command can move it', () => {
+  // Updated for v0.4.8: today() no longer shells out to `date`, so the old stub-based checks are
+  // impossible BY CONSTRUCTION — and the stronger contract is testable: a lying `date` on PATH must
+  // not move the row's date, and a malformed caller date must still refuse before any write.
   const dir = mkdtempSync(join(tmpdir(), 'dsh-optimisemd-baddate-'))
   const bin = join(dir, 'bin')
   try {
@@ -73,12 +78,9 @@ test('a bad date command is refused before any write', () => {
       '# MEMORY.md\n\n## Subject facts\n- **An existing row.** (2026-01-01) — `docs/memory-details/01.md`\n',
     )
     writeFileSync(join(dir, 'scripts/check-memory-index.sh'), '#!/usr/bin/env bash\nexit 0\n')
+    chmodSync(join(dir, 'scripts/check-memory-index.sh'), 0o755)
     const before = readFileSync(join(dir, 'MEMORY.md'), 'utf8')
     const oldPath = process.env.PATH
-    const stub = (body) => {
-      writeFileSync(join(bin, 'date'), `#!/usr/bin/env bash\n${body}\n`)
-      chmodSync(join(bin, 'date'), 0o755)
-    }
     const attempt = (dateArg) => {
       try {
         new RepoWriter(dir).saveChecked('A fact.', dateArg, 'docs/memory-details/01.md', null, null, null, null)
@@ -88,22 +90,24 @@ test('a bad date command is refused before any write', () => {
       }
     }
     try {
+      // A date command that answers with a wrong-path date gets no say.
+      writeFileSync(join(bin, 'date'), '#!/usr/bin/env bash\necho 2099-01-01\n')
+      chmodSync(join(bin, 'date'), 0o755)
       process.env.PATH = `${bin}:${oldPath}`
-      stub('echo 2026-11-16; exit 1')
-      assert.match(attempt(''), /date command failed/)
-      assert.equal(readFileSync(join(dir, 'MEMORY.md'), 'utf8'), before)
-      stub('echo garbage-date')
-      assert.match(attempt(''), /not YYYY-MM-DD/)
-      assert.equal(readFileSync(join(dir, 'MEMORY.md'), 'utf8'), before)
-      stub('true')
-      assert.match(attempt(''), /returned nothing/)
-      assert.equal(readFileSync(join(dir, 'MEMORY.md'), 'utf8'), before)
+      new RepoWriter(dir).saveChecked('A fact.', '', 'docs/memory-details/01.md', null, null, null, null)
+      const today = localDate()
+      const body = readFileSync(join(dir, 'MEMORY.md'), 'utf8')
+      assert.match(body, new RegExp(`\\(${today}\\)`))
+      assert.doesNotMatch(body, /2099-01-01/)
+      assert.ok(existsSync(join(dir, 'memory', `${today}.md`)))
+      assert.equal(existsSync(join(dir, 'memory', '2099-01-01.md')), false)
+      // Caller-supplied dates are calendar-checked before any write.
       for (const lying of ['2026-02-30', '2026-99-99']) {
-        stub(`echo ${lying}`)
-        assert.match(attempt(''), /not YYYY-MM-DD/)
-        assert.equal(readFileSync(join(dir, 'MEMORY.md'), 'utf8'), before)
+        assert.match(attempt(lying), /date/)
         assert.equal(existsSync(join(dir, 'memory', `${lying}.md`)), false)
       }
+      // The refused attempts changed nothing.
+      assert.equal(readFileSync(join(dir, 'MEMORY.md'), 'utf8'), body)
     } finally {
       process.env.PATH = oldPath
     }
@@ -167,6 +171,33 @@ test('a workspace entry is invisible in another workspace', () => {
     const other = store.snapshot('/elsewhere', '')
     assert.match(other, /everywhere/)
     assert.doesNotMatch(other, /only here/)
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }) } catch {}
+  }
+})
+
+test('save_checked refuses a caller date that is not a real calendar day', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-optimisemd-baddate-'))
+  try {
+    mkdirSync(join(dir, 'docs/memory-details'), { recursive: true })
+    writeFileSync(join(dir, 'MEMORY.md'), '# MEMORY.md\n\n## Subject facts\n')
+    const rw = new RepoWriter(dir)
+    assert.throws(() => rw.saveChecked('A fact.', '2026-99-99', 'docs/memory-details/01.md', null, null, null, null), /date/)
+    assert.throws(() => rw.saveChecked('A fact.', '2026-02-30', 'docs/memory-details/01.md', null, null, null, null), /date/)
+    assert.ok(!existsSync(join(dir, 'memory', '2026-99-99.md')))
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }) } catch {}
+  }
+})
+
+test('the snapshot renders every stored pair', () => {
+  const { store, dir } = fresh()
+  try {
+    store.add('user', 'workspace', 'a per-workspace preference', [], 'test', '/ws', '', 's1')
+    store.add('agent', 'user-global', 'a shared agent note', [], 'test', '/ws', '', 's1')
+    const snap = store.snapshot('/ws', '')
+    assert.match(snap, /\[user\/workspace\]\n- a per-workspace preference/)
+    assert.match(snap, /\[agent\/user-global\]\n- a shared agent note/)
   } finally {
     try { rmSync(dir, { recursive: true, force: true }) } catch {}
   }

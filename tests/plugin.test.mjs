@@ -1,7 +1,7 @@
 // The JS surface: the addon is found, and the tool's execute honours the store.
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { loadNative, nativeFile } from '../lib/native.mjs'
@@ -52,6 +52,65 @@ test('memory_save writes the row, the part section and the day line', async () =
     const bad = await executeRepoAction(RepoWriter, { text: 'x', pointer: 'notes/elsewhere.md' }, exec)
     assert.equal(bad.ok, false)
     assert.match(bad.error, /pointer refused/)
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }) } catch {}
+  }
+})
+
+test('the query limit is validated before it reaches the store', async () => {
+  const { MemoryStore } = loadNative()
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-optimisemd-limit-'))
+  try {
+    const store = new MemoryStore(join(dir, 'memory.db'), 2000, 4000)
+    const exec = { signal: { throwIfAborted() {} }, agent: { session: { id: 's1', header: { cwd: dir, agentPreset: '' } } } }
+    for (const limit of ['abc', -5, Infinity, NaN, 2.5]) {
+      const out = await executeMemoryAction(store, { action: 'query', text: 'x', limit }, exec)
+      assert.equal(out.ok, false, `limit ${limit} must be refused`)
+      assert.match(out.error, /limit/)
+    }
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }) } catch {}
+  }
+})
+
+test('memory_save refuses a part that would escape the parts directory', async () => {
+  const { RepoWriter } = loadNative()
+  const dir = mkdtempSync(join(tmpdir(), 'optimisemd-escape-'))
+  try {
+    mkdirSync(join(dir, 'docs/memory-details'), { recursive: true })
+    writeFileSync(join(dir, 'MEMORY.md'), '# MEMORY.md\n\n## Subject facts\n')
+    const exec = { signal: { throwIfAborted() {} }, agent: { session: { id: 's1', header: { cwd: dir, agentPreset: '' } } } }
+    const out = await executeRepoAction(RepoWriter, { text: 'A fact.', pointer: 'docs/memory-details/02.md', part: '../evil.md', slug: 'x', detail: 'd' }, exec)
+    assert.equal(out.ok, false)
+    assert.match(out.error, /part/)
+    assert.ok(!existsSync(join(dir, 'docs/evil.md')))
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }) } catch {}
+  }
+})
+
+test('the snapshot section is literal and frozen for the session', async () => {
+  const { apply } = await import('../index.mjs')
+  const { MemoryStore } = loadNative()
+  const dir = mkdtempSync(join(tmpdir(), 'optimisemd-freeze-'))
+  try {
+    let captured
+    const ctx = {
+      tools: { register() {} },
+      systemPrompt: { section(def) { captured = def } },
+    }
+    apply(ctx, { dbPath: join(dir, 'memory.db') })
+    assert.equal(captured.interpolate, false, 'the section must not be interpolated')
+    const assemble = { agent: { session: { id: 's1', header: { cwd: dir, agentPreset: '' } } } }
+    const first = captured.text(assemble)
+    assert.match(first, /Tier-0 memory/)
+    const store = new MemoryStore(join(dir, 'memory.db'), 2000, 4000)
+    store.add('agent', 'workspace', 'a mid-session write', [], 'test', resolve(dir), '', 's1')
+    const second = captured.text(assemble)
+    assert.equal(second, first, 'a mid-session write must not change the frozen snapshot')
+    // A new session sees the write.
+    const assemble2 = { agent: { session: { id: 's2', header: { cwd: dir, agentPreset: '' } } } }
+    assert.match(captured.text(assemble2), /a mid-session write/)
   } finally {
     try { rmSync(dir, { recursive: true, force: true }) } catch {}
   }

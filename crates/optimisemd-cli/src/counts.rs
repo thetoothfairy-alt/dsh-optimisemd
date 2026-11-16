@@ -7,7 +7,6 @@
 use std::error::Error;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 use optimisemd_core::Store;
 
@@ -43,10 +42,13 @@ pub fn measure(root: &Path) -> Counts {
         })
         .unwrap_or((0, 0));
     Counts {
-        rows: count_lines(&memory, |l| l.starts_with("- **")),
+        // One definition per figure: rows are what the index check counts as rows, days are what
+        // the log index counts as days — a stray or impossible date is not a daily log.
+        rows: count_lines(&memory, |l| crate::memindex::fact_parts(l).is_some()),
         rules: count_lines(&root.join("docs/RULES.md"), |l| l.starts_with("| R-")),
         days: count_files(&root.join("memory"), |n| {
-            n.starts_with("20") && n.ends_with(".md")
+            n.strip_suffix(".md")
+                .is_some_and(optimisemd_core::repo::valid_date)
         }),
         parts: count_files(&root.join("docs/memory-details"), |n| n.ends_with(".md")),
         runbooks: count_files(&root.join("docs/runbooks"), |n| n.ends_with(".md")),
@@ -93,7 +95,7 @@ fn store_usage() -> (String, String) {
     let Some(path) = crate::store_path_read() else {
         return ("?".into(), "?".into());
     };
-    let Ok(store) = Store::open(&path, Default::default()) else {
+    let Ok(store) = Store::open_readonly(&path) else {
         return ("?".into(), "?".into());
     };
     let agent = store
@@ -108,11 +110,7 @@ fn store_usage() -> (String, String) {
 }
 
 fn today() -> Result<String, Box<dyn Error>> {
-    let out = Command::new("date").arg("+%F").output()?;
-    if !out.status.success() {
-        return Err("date +%F failed".into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    Ok(optimisemd_core::today_local())
 }
 
 fn read_doc(root: &Path) -> Result<String, Box<dyn Error>> {
@@ -185,7 +183,7 @@ pub fn write(root: &Path, want: &str) -> Result<i32, Box<dyn Error>> {
         None => "",
     };
     let body = format!("{head}{MARKER}\n{want}\n{END}\n{tail}");
-    fs::write(root.join(DOC), body)?;
+    optimisemd_core::write_atomic(&root.join(DOC), &body)?;
     println!("wrote the measured block");
     Ok(0)
 }
@@ -319,5 +317,24 @@ mod tests {
             fs::read_to_string(dir.join(DOC)).unwrap(),
             "# doc without a block\n"
         );
+    }
+
+    #[test]
+    fn days_only_count_calendar_dates_and_rows_only_count_rows() {
+        let dir = fixture();
+        // Impossible dates and stray names are not daily logs, whatever they end in.
+        fs::write(dir.join("memory/2026-13-99.md"), "# impossible\n").unwrap();
+        fs::write(dir.join("memory/2026-02-30.md"), "# impossible\n").unwrap();
+        fs::write(dir.join("memory/2026-11-16-extra.md"), "# stray\n").unwrap();
+        // A line that is not a parseable row is not a fact row.
+        let body = fs::read_to_string(dir.join("MEMORY.md")).unwrap();
+        fs::write(
+            dir.join("MEMORY.md"),
+            format!("{body}- **Broken row without pointer\n"),
+        )
+        .unwrap();
+        let c = measure(&dir);
+        assert_eq!(c.days, 2);
+        assert_eq!(c.rows, 3);
     }
 }

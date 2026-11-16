@@ -73,6 +73,35 @@ pub struct Store {
     budgets: Budgets,
 }
 
+/// A write transaction that holds the database's write lock from the first statement (BEGIN IMMEDIATE),
+/// so the cap check and the insert it guards cannot interleave with another writer. Rolls back on drop
+/// unless `commit` was reached.
+struct Tx<'c> {
+    conn: &'c Connection,
+    active: bool,
+}
+
+impl<'c> Tx<'c> {
+    fn begin(conn: &'c Connection) -> Result<Self, StoreError> {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        Ok(Self { conn, active: true })
+    }
+
+    fn commit(mut self) -> Result<(), StoreError> {
+        self.conn.execute_batch("COMMIT")?;
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for Tx<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.conn.execute_batch("ROLLBACK");
+        }
+    }
+}
+
 impl Store {
     pub fn open(path: &Path, budgets: Budgets) -> Result<Self, StoreError> {
         if let Some(dir) = path.parent() {
@@ -81,6 +110,8 @@ impl Store {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // Two sessions writing at once must queue, not fail instantly on SQLITE_BUSY.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(
             "create table if not exists entries (
                  id text primary key,
@@ -108,6 +139,20 @@ impl Store {
              );",
         )?;
         Ok(Self { conn, budgets })
+    }
+
+    /// A read-only handle for the read paths (list, query, verify, history, export): it creates
+    /// nothing and writes nothing — reading the legacy dsh-memento store must not touch it.
+    pub fn open_readonly(path: &Path) -> Result<Self, StoreError> {
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+        )?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        Ok(Self {
+            conn,
+            budgets: Budgets::default(),
+        })
     }
 
     fn now_ms() -> i64 {
@@ -221,12 +266,22 @@ impl Store {
         if text.is_empty() {
             return Err(StoreError::Invalid("text is empty".into()));
         }
+        if text.contains('\n') || text.contains('\r') {
+            return Err(StoreError::Invalid(
+                "entry text must be one line — no newline".into(),
+            ));
+        }
         if track != "user" && track != "agent" {
             return Err(StoreError::Invalid(format!("unknown track {track:?}")));
         }
         if scope != "user-global" && scope != "workspace" {
             return Err(StoreError::Invalid(format!("unknown scope {scope:?}")));
         }
+        let id = uuid::Uuid::new_v4().to_string();
+        let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".into());
+        // The cap check and the insert move together: two sessions writing at once must not both
+        // pass the check and jointly exceed the budget.
+        let tx = Tx::begin(&self.conn)?;
         let after = self.usage(track, scope)? + text.chars().count();
         let cap = self.cap(track);
         if after > cap {
@@ -237,25 +292,34 @@ impl Store {
                 cap,
             });
         }
-        let id = uuid::Uuid::new_v4().to_string();
-        let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".into());
         self.conn.execute(
             "insert into entries (id,track,scope,workspace_key,agent_key,text,tags,source,created_at) values (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
             rusqlite::params![id, track, scope, workspace_key, agent_key, text, tags_json, source, Self::now_ms()],
         )?;
         self.audit("add", track, scope, &id, text, "applied", source, session)?;
+        tx.commit()?;
         Ok(id)
     }
 
     fn find_matches(&self, needle: &str) -> Result<Vec<Entry>, StoreError> {
         let all = self.list_entries()?;
+        let lower = needle.to_lowercase();
         Ok(all
             .into_iter()
-            .filter(|e| e.text.contains(needle))
+            .filter(|e| e.text.to_lowercase().contains(&lower))
             .collect())
     }
 
     pub fn replace(&self, needle: &str, text: &str, session: &str) -> Result<Entry, StoreError> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(StoreError::Invalid("text is empty".into()));
+        }
+        if text.contains('\n') || text.contains('\r') {
+            return Err(StoreError::Invalid(
+                "entry text must be one line — no newline".into(),
+            ));
+        }
         let matches = self.find_matches(needle)?;
         if matches.is_empty() {
             return Err(StoreError::NotFound(needle.into()));
@@ -264,6 +328,7 @@ impl Store {
             return Err(StoreError::Ambiguous(matches.len()));
         }
         let old = matches.into_iter().next().expect("one match");
+        let tx = Tx::begin(&self.conn)?;
         let delta = text.chars().count() as isize - old.text.chars().count() as isize;
         let after = (self.usage(&old.track, &old.scope)? as isize + delta).max(0) as usize;
         if after > self.cap(&old.track) {
@@ -276,7 +341,7 @@ impl Store {
         }
         self.conn.execute(
             "update entries set text=?1 where id=?2",
-            rusqlite::params![text.trim(), old.id],
+            rusqlite::params![text, old.id],
         )?;
         self.audit(
             "replace",
@@ -288,6 +353,7 @@ impl Store {
             "memory-tool",
             session,
         )?;
+        tx.commit()?;
         self.get(&old.id)?
             .ok_or_else(|| StoreError::NotFound(old.id.clone()))
     }
@@ -385,6 +451,11 @@ impl Store {
                 "merge needs --text (the one entry that survives)".into(),
             ));
         }
+        if text.contains('\n') || text.contains('\r') {
+            return Err(StoreError::Invalid(
+                "entry text must be one line — no newline".into(),
+            ));
+        }
         let all = self.list_entries()?;
         let mut victims = Vec::new();
         for m in matches {
@@ -407,7 +478,11 @@ impl Store {
                 n => return Err(StoreError::Ambiguous(n)),
             }
         }
-        let after = self.usage(track, scope)? + text.chars().count();
+        // A consolidation replaces its victims: the budget is what the pair ends up holding, not
+        // what it holds plus the whole new text. The deletes and the insert move in one transaction,
+        // so an interruption cannot leave victims deleted with no survivor.
+        let victims_chars: usize = victims.iter().map(|v| v.text.chars().count()).sum();
+        let after = self.usage(track, scope)? - victims_chars + text.chars().count();
         let cap = self.cap(track);
         if after > cap {
             return Err(StoreError::Budget {
@@ -419,6 +494,7 @@ impl Store {
         }
         let id = uuid::Uuid::new_v4().to_string();
         let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".into());
+        let tx = Tx::begin(&self.conn)?;
         for v in &victims {
             self.conn
                 .execute("delete from entries where id=?1", rusqlite::params![v.id])?;
@@ -447,6 +523,7 @@ impl Store {
             source,
             "",
         )?;
+        tx.commit()?;
         Ok(id)
     }
 
@@ -465,7 +542,9 @@ impl Store {
         if !memento_path.exists() {
             return Ok(0);
         }
-        let src = Connection::open(memento_path)?;
+        // The source is read-only here too: importing must never write to the legacy store.
+        let src =
+            Connection::open_with_flags(memento_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let mut stmt = src.prepare("select id,track,scope,workspace_key,agent_key,text,tags,source,created_at from entries")?;
         let rows = stmt.query_map([], |r| {
             Ok(Entry {
@@ -492,6 +571,22 @@ impl Store {
                 )
                 .optional()?;
             if exists.is_some() {
+                continue;
+            }
+            // The caps hold at import too: a legacy entry that would blow the budget is skipped and
+            // audited as such, never silently loaded past the store's own limits.
+            let after = self.usage(&e.track, &e.scope)? + e.text.chars().count();
+            if after > self.cap(&e.track) {
+                self.audit(
+                    "import",
+                    &e.track,
+                    &e.scope,
+                    &e.id,
+                    &e.text,
+                    "skipped: over budget",
+                    "migration",
+                    "",
+                )?;
                 continue;
             }
             self.conn.execute(
@@ -599,6 +694,188 @@ mod tests {
             .collect();
         assert!(texts.contains(&"A fact.".to_string()));
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn fresh(tag: &str) -> (PathBuf, Store) {
+        let dir =
+            std::env::temp_dir().join(format!("optimisemd-hard-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let store = Store::open(&dir.join("m.db"), Budgets::default()).unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn merge_budget_counts_the_victims_it_replaces() {
+        let (dir, store) = fresh("budget");
+        let big = "A".repeat(1900);
+        store
+            .add("user", "user-global", &big, &[], "test", "", "", "")
+            .unwrap();
+        store
+            .add(
+                "user",
+                "user-global",
+                "B".repeat(50).as_str(),
+                &[],
+                "test",
+                "",
+                "",
+                "",
+            )
+            .unwrap();
+        // A consolidation that shrinks the pair must not be refused: 400 chars replace 1950.
+        let id = store
+            .merge(
+                &["AAAA".into(), "BBBBB".into()],
+                "user",
+                "user-global",
+                "C".repeat(400).as_str(),
+                &[],
+                "test",
+            )
+            .expect("a shrinking merge fits the cap");
+        assert!(store.get(&id).unwrap().is_some());
+        let (dir2, store2) = fresh("budget2");
+        store2
+            .add("user", "user-global", &big, &[], "test", "", "", "")
+            .unwrap();
+        // A merge that grows the pair past the cap is still refused.
+        assert!(matches!(
+            store2.merge(
+                &["AAAA".into()],
+                "user",
+                "user-global",
+                &"D".repeat(2500),
+                &[],
+                "test"
+            ),
+            Err(StoreError::Budget { .. })
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn replace_refuses_empty_text() {
+        let (dir, store) = fresh("empty");
+        store
+            .add(
+                "user",
+                "user-global",
+                "Hello world",
+                &[],
+                "test",
+                "",
+                "",
+                "",
+            )
+            .unwrap();
+        assert!(matches!(
+            store.replace("Hello", "   ", "s1"),
+            Err(StoreError::Invalid(_))
+        ));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn entry_text_must_be_one_line() {
+        let (dir, store) = fresh("newline");
+        assert!(matches!(
+            store.add("user", "user-global", "a\nb", &[], "test", "", "", ""),
+            Err(StoreError::Invalid(_))
+        ));
+        store
+            .add(
+                "user",
+                "user-global",
+                "Hello world",
+                &[],
+                "test",
+                "",
+                "",
+                "",
+            )
+            .unwrap();
+        assert!(matches!(
+            store.replace("Hello", "line one\nline two", "s1"),
+            Err(StoreError::Invalid(_))
+        ));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replace_and_remove_match_case_insensitively() {
+        let (dir, store) = fresh("case");
+        store
+            .add(
+                "user",
+                "user-global",
+                "Hello World",
+                &[],
+                "test",
+                "",
+                "",
+                "",
+            )
+            .unwrap();
+        let e = store.replace("hello wor", "Howdy World", "s1").unwrap();
+        assert_eq!(e.text, "Howdy World");
+        store.remove("HOWDY", "s1").unwrap();
+        assert!(store.list_entries().unwrap().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_skips_entries_over_the_cap() {
+        let (dir, store) = fresh("import");
+        let src_dir =
+            std::env::temp_dir().join(format!("optimisemd-memento-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&src_dir);
+        let src = Store::open(
+            &src_dir.join("m.db"),
+            Budgets {
+                user: 100_000,
+                agent: 100_000,
+            },
+        )
+        .unwrap();
+        src.add(
+            "user",
+            "user-global",
+            &"X".repeat(5000),
+            &[],
+            "test",
+            "",
+            "",
+            "",
+        )
+        .unwrap();
+        src.add(
+            "user",
+            "user-global",
+            "a small fact",
+            &[],
+            "test",
+            "",
+            "",
+            "",
+        )
+        .unwrap();
+        let n = store.import_from_memento(&src_dir.join("m.db")).unwrap();
+        assert_eq!(n, 1, "the over-cap entry must not import");
+        assert_eq!(
+            store.usage("user", "user-global").unwrap(),
+            "a small fact".len()
+        );
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&src_dir);
     }
 }
 

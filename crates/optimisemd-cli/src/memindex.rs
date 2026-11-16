@@ -2,7 +2,7 @@
 //! a wrapper over this so the commit hook, the save gate and a hand run all share one implementation.
 
 use regex::Regex;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::error::Error;
 use std::fs;
 use std::path::Path;
@@ -31,6 +31,17 @@ fn words_of(fact: &str) -> HashSet<String> {
         .collect()
 }
 
+/// The fact text and the date of a parseable row: `- **<text>** (<date>) — \`<file>.md\``.
+pub(crate) fn fact_parts(line: &str) -> Option<(String, Option<String>)> {
+    let rest = line.strip_prefix("- **")?;
+    let mid = rest.find("** (")?;
+    let text = rest[..mid].to_string();
+    let after = &rest[mid + 4..];
+    let close = after.find(')')?;
+    let date = after[..close].to_string();
+    Some((text, Some(date)))
+}
+
 pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
     let mut targets = targets;
     if targets.is_empty() {
@@ -50,12 +61,24 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
     let slug_ok = Regex::new(r"^[a-z0-9-]+$")?;
     let mut findings: Vec<String> = Vec::new();
     let mut fact_rows = 0usize;
+    let mut rows_per_target: Vec<(String, usize)> = Vec::new();
     let mut detail_rows = 0usize;
     let mut pointed: HashSet<String> = HashSet::new();
 
     for target in &targets {
-        let text = fs::read_to_string(root.join(target)).unwrap_or_default();
+        // A check that cannot read its input must fail, not claim zero findings: an unreadable or
+        // non-UTF8 index is a finding, exactly as the regenerated reports treat theirs.
+        let text = match fs::read_to_string(root.join(target)) {
+            Ok(t) => t,
+            Err(e) => {
+                findings.push(format!(
+                    "{target}: cannot be read ({e}) — this check cannot see its input and must not pass"
+                ));
+                continue;
+            }
+        };
         let mut section: Option<String> = None;
+        let mut target_rows = 0usize;
         for (i, line) in text.lines().enumerate() {
             let i = i + 1;
             if line.starts_with("## ") {
@@ -63,6 +86,7 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
             }
             if let Some(caps) = row_re.captures(line) {
                 fact_rows += 1;
+                target_rows += 1;
                 if section
                     .as_deref()
                     .is_none_or(|s| s.starts_with("## Detail"))
@@ -70,9 +94,23 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
                     findings.push(format!("{target}:{i}: a fact row outside a subject section — put it under a `##` heading, above the detail table"));
                 }
                 let path = caps[1].to_string();
-                let text_before = line.split(" — `").next().unwrap_or("").to_string();
-                if text_before.chars().count() > MAX {
-                    findings.push(format!("{target}:{i}: row text is {} chars, cap {MAX} — split the fact or move detail out", text_before.chars().count()));
+                // The cap counts the FACT text; the date and the pointer sit outside it, as documented.
+                match fact_parts(line) {
+                    Some((fact, Some(date))) => {
+                        if fact.chars().count() > MAX {
+                            findings.push(format!("{target}:{i}: row text is {} chars, cap {MAX} — split the fact or move detail out", fact.chars().count()));
+                        }
+                        if !optimisemd_core::repo::valid_date(&date) {
+                            findings.push(format!(
+                                "{target}:{i}: row carries ({date}), which is not a real YYYY-MM-DD date"
+                            ));
+                        }
+                    }
+                    _ => {
+                        findings.push(format!(
+                            "{target}:{i}: a row without its `(YYYY-MM-DD)` date — the date answers how long the fact has stood (docs/runbooks/memory.md)"
+                        ));
+                    }
                 }
                 if !root.join(&path).exists() {
                     findings.push(format!(
@@ -83,7 +121,8 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
                     let family = path.starts_with("docs/memory-details/")
                         || path.starts_with("docs/runbooks/")
                         || path.starts_with("skills/")
-                        || path == "docs/hard-won.md";
+                        || path == "docs/hard-won.md"
+                        || path.starts_with("docs/hard-won/");
                     if !family {
                         findings.push(format!("{target}:{i}: a fact row hops to {path} — point it at a docs/memory-details/ part, its runbook, a skill, or docs/hard-won.md (docs/runbooks/memory.md)"));
                     }
@@ -123,12 +162,29 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
                 }
             }
         }
+        rows_per_target.push((target.clone(), target_rows));
     }
 
-    // [7] one subject, one row: a shared pointer and two shared distinctive words are the same subject written twice.
-    let mut seen: HashMap<String, Vec<(usize, HashSet<String>)>> = HashMap::new();
+    // The documented index budget: MEMORY.md carries at most 200 rows. The count is enforced, not
+    // merely printed — retire quiet rows with `bin/dsh-optimisemd promote`.
+    for (target, n) in &rows_per_target {
+        if target == "MEMORY.md" && *n > 200 {
+            findings.push(format!(
+                "{target}: holds {n} rows, the cap is 200 — retire quiet rows (bin/dsh-optimisemd promote)"
+            ));
+        }
+    }
+
+    // [7] one subject, one row. Same pointer + two shared distinctive words (as before), or FOUR
+    // shared distinctive words across DIFFERENT pointers — calibrated 2026-11-16 against the real
+    // index, where three generic words ("cannot, gateway, whatsapp") made two different subjects
+    // collide. The same subject written twice does not stop being one subject because the rows
+    // point at different files.
+    let mut seen_rows: Vec<(String, usize, HashSet<String>)> = Vec::new();
     for target in &targets {
-        let text = fs::read_to_string(root.join(target)).unwrap_or_default();
+        let Ok(text) = fs::read_to_string(root.join(target)) else {
+            continue;
+        };
         for (i, line) in text.lines().enumerate() {
             let i = i + 1;
             let Some(caps) = row_re.captures(line) else {
@@ -141,16 +197,15 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
             let fact = fact.split(" — `").next().unwrap_or("").to_string();
             let words = words_of(&fact);
             let key = caps[1].to_string();
-            if let Some(prev) = seen.get(&key) {
-                for (oj, owords) in prev {
-                    let mut shared: Vec<&String> = words.intersection(owords).collect();
-                    if shared.len() >= 2 {
-                        shared.sort();
-                        findings.push(format!("{target}:{i}: same subject as line {oj} ({}) — one row per subject; edit the existing row or supersede it (docs/runbooks/memory.md)", shared.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")));
-                    }
+            for (okey, oj, owords) in &seen_rows {
+                let mut shared: Vec<&String> = words.intersection(owords).collect();
+                let need = if *okey == key { 2 } else { 4 };
+                if shared.len() >= need {
+                    shared.sort();
+                    findings.push(format!("{target}:{i}: same subject as line {oj} ({}) — one row per subject; edit the existing row or supersede it (docs/runbooks/memory.md)", shared.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")));
                 }
             }
-            seen.entry(key).or_default().push((i, words));
+            seen_rows.push((key, i, words));
         }
     }
 
@@ -171,7 +226,15 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
         if !pointed.contains(part) {
             findings.push(format!("{part}: no index row points at this part (orphan)"));
         }
-        let text = fs::read_to_string(root.join(part)).unwrap_or_default();
+        let text = match fs::read_to_string(root.join(part)) {
+            Ok(t) => t,
+            Err(e) => {
+                findings.push(format!(
+                    "{part}: cannot be read ({e}) — this check cannot see it"
+                ));
+                continue;
+            }
+        };
         let lines: Vec<&str> = text.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             if slug_re.is_match(line)
@@ -224,5 +287,125 @@ pub fn selftest() -> Result<i32, Box<dyn Error>> {
     } else {
         eprintln!("selftest FAIL — the unparseable-row finding did not fire (exit {code})");
         Ok(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn fixture(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("optimisemd-memindex-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("docs/runbooks")).unwrap();
+        fs::write(dir.join("docs/hard-won.md"), "# Landmines\n").unwrap();
+        fs::write(dir.join("docs/runbooks/memory.md"), "# runbook\n").unwrap();
+        dir
+    }
+
+    fn out(run: Result<i32, Box<dyn Error>>) -> i32 {
+        run.unwrap()
+    }
+
+    #[test]
+    fn an_unreadable_index_fails_the_gate() {
+        let dir = fixture("unreadable");
+        fs::write(dir.join("MEMORY.md"), [0xff, 0xfe, 0x00, 0x9f]).unwrap();
+        // A check that cannot read its input must fail, not claim zero findings.
+        assert_eq!(out(run(&dir, vec![])), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_cap_counts_the_fact_text_not_the_markup_and_date() {
+        let dir = fixture("cap");
+        let long = "x".repeat(195);
+        fs::write(
+            dir.join("MEMORY.md"),
+            format!("# MEMORY.md\n\n## Subject facts\n- **{long}.** (2026-01-01) — `docs/hard-won.md`\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            out(run(&dir, vec![])),
+            0,
+            "195 chars of text is under the cap"
+        );
+        let too_long = "y".repeat(205);
+        fs::write(
+            dir.join("MEMORY.md"),
+            format!("# MEMORY.md\n\n## Subject facts\n- **{too_long}.** (2026-01-01) — `docs/hard-won.md`\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            out(run(&dir, vec![])),
+            1,
+            "205 chars of text is over the cap"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_undated_row_is_a_finding() {
+        let dir = fixture("undated");
+        fs::write(
+            dir.join("MEMORY.md"),
+            "# MEMORY.md\n\n## Subject facts\n- **A fact without a date.** — `docs/hard-won.md`\n",
+        )
+        .unwrap();
+        assert_eq!(out(run(&dir, vec![])), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_index_caps_at_200_rows() {
+        let dir = fixture("rows");
+        let mut body = String::from("# MEMORY.md\n\n## Subject facts\n");
+        for i in 0..201u32 {
+            // One distinctive word per row: only the row count may fire here.
+            let word = format!(
+                "fact{}{}{}",
+                char::from(b'a' + (i / 676) as u8),
+                char::from(b'a' + ((i / 26) % 26) as u8),
+                char::from(b'a' + (i % 26) as u8),
+            );
+            body.push_str(&format!(
+                "- **{word}.** (2026-01-01) — `docs/hard-won.md`\n"
+            ));
+        }
+        fs::write(dir.join("MEMORY.md"), body).unwrap();
+        assert_eq!(out(run(&dir, vec![])), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn one_subject_across_two_pointers_is_still_one_subject() {
+        let dir = fixture("subject");
+        fs::write(
+            dir.join("MEMORY.md"),
+            "# MEMORY.md\n\n## Subject facts\n\
+             - **NetDent reception sign-in lockout needs the SQL route restored quickly.** (2026-01-01) — `docs/hard-won.md`\n\
+             - **NetDent reception sign-in lockout needs the backup route restored quickly.** (2026-01-02) — `docs/runbooks/memory.md`\n",
+        )
+        .unwrap();
+        assert_eq!(out(run(&dir, vec![])), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn three_generic_shared_words_are_not_the_same_subject() {
+        // Calibrated 2026-11-16 on the real index: "cannot, gateway, whatsapp" joined two rows about
+        // different things. Four shared distinctive words are the cross-pointer bar.
+        let dir = fixture("generic");
+        fs::write(
+            dir.join("MEMORY.md"),
+            "# MEMORY.md\n\n## Subject facts\n\
+             - **The VPS copy of the WhatsApp gateway is disabled and cannot steal the linked session.** (2026-01-01) — `docs/hard-won.md`\n\
+             - **Claude Code answers WhatsApp through a gateway plugin and cannot host the link or the cron clock.** (2026-01-02) — `docs/runbooks/memory.md`\n",
+        )
+        .unwrap();
+        assert_eq!(out(run(&dir, vec![])), 0);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

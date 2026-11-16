@@ -54,14 +54,19 @@ export function apply(ctx, config = {}) {
   ctx.systemPrompt.section({
     name: 'dsh-optimisemd:memory',
     order: config.snapshotOrder ?? DEFAULT_SNAPSHOT_ORDER,
+    // Literal, never interpolated: a `{{…}}` inside an entry must not be expanded — or throw —
+    // during prompt assembly for every model step of every session in the workspace.
+    interpolate: false,
     text: (assemble) => {
       const session = assemble?.agent?.session
       if (session == null) return ''
-      let frozen = snapshots.get(session)
-      if (frozen === undefined) {
-        frozen = store.snapshot(String(session?.header?.cwd ?? process.cwd()), String(session?.header?.agentPreset ?? ''))
-        snapshots.set(session, frozen)
-      }
+      // Frozen per session: the first assembly's snapshot stays the session's, keyed on the session
+      // object AND its id, so a mid-session write never rewrites the prompt prefix.
+      const sid = String(session.id ?? '')
+      const prior = snapshots.get(session)
+      if (prior !== undefined && prior.id === sid) return prior.frozen
+      const frozen = store.snapshot(String(session?.header?.cwd ?? process.cwd()), String(session?.header?.agentPreset ?? ''))
+      snapshots.set(session, { id: sid, frozen })
       return frozen
     },
   })

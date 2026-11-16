@@ -5,7 +5,36 @@ on:
     tags: ["v*"]
 
 jobs:
+  # Every release carries code that passed: the same gates CI runs, including the node tests on
+  # Windows (the win32 addon ships to users, so its host tests run on Windows too).
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --release
+      - run: pnpm install
+      - run: pnpm build
+      - run: pnpm test
+
   build:
+    needs: test
     strategy:
       fail-fast: false
       matrix:
@@ -15,8 +44,8 @@ jobs:
           - os: windows-latest
             target: win32-x64
     runs-on: ${{ matrix.os }}
-    # macOS has no runner on this account's plan, so it is not in the matrix; macOS users build the addon from source on
-    # install (the package's prepare step does that with their own toolchain).
+    # macOS has no runner on this account's plan, so it is not in the matrix; the macOS addon is
+    # built on the owner's Mac from the tag and uploaded to the same release.
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -39,7 +68,7 @@ jobs:
           path: native/*.node
 
   publish:
-    needs: build
+    needs: [test, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -50,6 +79,15 @@ jobs:
           path: native
           pattern: dsh-optimisemd-*
           merge-multiple: true
+      - name: the tag matches the package version
+        shell: bash
+        run: |
+          want="v$(node -p "require('./package.json').version")"
+          got="${GITHUB_REF_NAME}"
+          if [ "$want" != "$got" ]; then
+            echo "tag $got does not match the package version $want"
+            exit 1
+          fi
       - name: attach the addons to the release
         uses: softprops/action-gh-release@v2
         with:

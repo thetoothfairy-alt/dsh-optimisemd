@@ -49,18 +49,15 @@ pub enum PromoError {
     Parse(String),
 }
 
-/// Days since the Unix epoch for a YYYY-MM-DD date (civil calendar, no dependency).
+/// Days since the Unix epoch for a YYYY-MM-DD date (civil calendar, no dependency). A date that is
+/// not a real calendar day is refused, so 2026-02-31 cannot age into or out of a demotion window.
 pub fn day_number(date: &str) -> Option<i64> {
-    let b = date.as_bytes();
-    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+    if !crate::repo::valid_date(date) {
         return None;
     }
     let y: i64 = date[0..4].parse().ok()?;
     let m: i64 = date[5..7].parse().ok()?;
     let d: i64 = date[8..10].parse().ok()?;
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
-        return None;
-    }
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400;
@@ -70,24 +67,10 @@ pub fn day_number(date: &str) -> Option<i64> {
     Some(era * 146097 + doe - 719468)
 }
 
-pub fn today_utc() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let days = secs / 86_400;
-    // Civil-from-days (Howard Hinnant), the inverse of day_number.
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02}")
+/// Today in the local time zone, as the day log and every other stamp use it (was UTC until 0.4.8,
+/// which dated a demotion a day off near midnight).
+pub fn today_local() -> String {
+    crate::util::today_local()
 }
 
 fn parse_row(line: &str, section: &str) -> Option<Row> {
@@ -145,14 +128,15 @@ impl Promoter {
     pub fn report(&self, days: u32) -> Result<Report, PromoError> {
         let body = self.read("MEMORY.md")?;
         let rows = parse_rows(&body);
-        let today = day_number(&today_utc()).unwrap_or(0);
+        let today = day_number(&today_local()).unwrap_or(0);
         let demote: Vec<Row> = rows
             .iter()
             .filter(|r| !protected(&r.section))
-            .filter(|r| r.pointer.starts_with("docs/memory-details/"))
+            .filter(|r| r.pointer.starts_with("docs/memory-details/") && !r.pointer.contains(".."))
             .filter(|r| {
+                // Outside the window: the same boundary active_in_logs uses for "inside it".
                 day_number(&r.date)
-                    .map(|d| today - d >= days as i64)
+                    .map(|d| today - d > days as i64)
                     .unwrap_or(false)
             })
             .cloned()
@@ -205,7 +189,7 @@ impl Promoter {
     }
 
     fn active_in_logs(&self, words: &[String], days: u32) -> Result<bool, PromoError> {
-        let today = day_number(&today_utc()).unwrap_or(0);
+        let today = day_number(&today_local()).unwrap_or(0);
         let dir = self.root.join("memory");
         let Ok(entries) = fs::read_dir(&dir) else {
             return Ok(false);
@@ -230,6 +214,11 @@ impl Promoter {
     }
 
     /// Move the candidates into their parts. Returns the report, with the backup directory when anything was written.
+    ///
+    /// Crash safety (v0.4.8): every file gets ONE pristine backup at its relative path before its
+    /// first change (two rows into the same part no longer overwrite the backup with the moved
+    /// copy), each write is atomic, and only the exact row line is removed — prose that quotes the
+    /// row and deliberate blank blocks are not this command's business.
     pub fn apply(&self, days: u32, dry_run: bool) -> Result<Report, PromoError> {
         let mut report = self.report(days)?;
         report.dry_run = dry_run;
@@ -237,27 +226,38 @@ impl Promoter {
             return Ok(report);
         }
         let stamp = format!(
-            "promotion-apply-{}",
+            "promotion-apply-{}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            std::process::id()
         );
         let backup = self.root.join("memory/logs").join(&stamp);
         fs::create_dir_all(&backup)?;
-        fs::copy(self.root.join("MEMORY.md"), backup.join("MEMORY.md"))?;
-        let today = today_utc();
+        let mut backed: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut body = self.read("MEMORY.md")?;
+        let today = today_local();
         for row in &report.demote {
-            let part_rel = &row.pointer;
-            let part_path = self.root.join(part_rel);
+            let part_rel = row.pointer.clone();
+            let part_path = self.root.join(&part_rel);
             let mut part = if part_path.exists() {
                 fs::read_to_string(&part_path)?
             } else {
                 continue;
             };
-            if let Some(file) = part_path.file_name() {
-                fs::copy(&part_path, backup.join(file))?;
+            // One pristine copy per file, before its first change, restored by this relative path.
+            for rel in ["MEMORY.md".to_string(), part_rel.clone()] {
+                if backed.insert(rel.clone()) {
+                    let src = self.root.join(&rel);
+                    if src.exists() {
+                        let dst = backup.join(&rel);
+                        if let Some(dir) = dst.parent() {
+                            fs::create_dir_all(dir)?;
+                        }
+                        fs::copy(&src, &dst)?;
+                    }
+                }
             }
             if !part.contains(DEMOTED_HEADING) {
                 if !part.ends_with('\n') {
@@ -272,34 +272,27 @@ impl Promoter {
             );
             part.push_str(&moved);
             part.push('\n');
-            fs::write(&part_path, part)?;
-            // Remove the line with its newline; replacing the text alone leaves a blank line where the row was.
-            let with_newline = format!("{old_line}\n");
-            if body.contains(&with_newline) {
-                body = body.replace(&with_newline, "");
-            } else {
-                body = body.replace(&old_line, "");
-            }
-            report.applied.push(format!("{part_rel}: {moved}"));
-        }
-        // collapse doubled blank lines left behind, then write the index
-        let cleaned: Vec<&str> = body.lines().collect();
-        let mut out = String::new();
-        let mut blank = 0;
-        for l in cleaned {
-            if l.trim().is_empty() {
-                blank += 1;
-                if blank > 1 {
+            crate::util::write_atomic(&part_path, &part)?;
+            // Remove the row's own line, and nothing else.
+            let mut out: Vec<&str> = Vec::new();
+            let mut removed = false;
+            for l in body.lines() {
+                if !removed && l == old_line {
+                    removed = true;
                     continue;
                 }
-            } else {
-                blank = 0;
+                out.push(l);
             }
-            out.push_str(l);
-            out.push('\n');
+            if !removed {
+                return Err(PromoError::Parse(format!(
+                    "the row to move is not an exact line in MEMORY.md: {old_line}"
+                )));
+            }
+            body = out.join("\n");
+            body.push('\n');
+            report.applied.push(format!("{part_rel}: {moved}"));
         }
-        let trimmed = out.trim_end().to_string() + "\n";
-        fs::write(self.root.join("MEMORY.md"), trimmed)?;
+        crate::util::write_atomic(&self.root.join("MEMORY.md"), &body)?;
         report.backup = Some(backup.display().to_string());
         Ok(report)
     }
@@ -383,6 +376,79 @@ mod tests {
             1
         );
         assert_eq!(day_number("2026-13-01"), None);
-        assert!(day_number(&today_utc()).is_some());
+        assert_eq!(day_number("2026-02-31"), None);
+        assert_eq!(day_number("2025-02-29"), None);
+        assert!(day_number(&today_local()).is_some());
+    }
+
+    fn fixture_two(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("optimisemd-promo-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("docs/memory-details")).unwrap();
+        fs::create_dir_all(dir.join("memory")).unwrap();
+        fs::write(
+            dir.join("docs/memory-details/01.md"),
+            "# Memory details — 01\n\n### §test-subject\n\nLong form.\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("memory/2026-11-13.md"),
+            "# 2026-11-13\n\n- today's line\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("MEMORY.md"),
+            "# MEMORY.md\n\n## Subject facts\n\
+             - **A quiet row.** (2020-01-01) — `docs/memory-details/01.md`\n\
+             - **A second quiet row that quotes A quiet row. inside.** (2020-01-01) — `docs/memory-details/01.md`\n\
+             - **A fresh row.** (2026-11-13) — `docs/memory-details/01.md`\n\n\
+             ## Notes\n\
+             A quotation of the row above: - **A quiet row.** (2020-01-01) — `docs/memory-details/01.md`\n\n\
+             \nA deliberate blank block ends here.\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn apply_backs_up_each_file_once_before_its_first_change() {
+        let dir = fixture_two("backup");
+        let pristine = fs::read_to_string(dir.join("docs/memory-details/01.md")).unwrap();
+        let r = Promoter::new(&dir).apply(180, false).unwrap();
+        let backup = PathBuf::from(r.backup.unwrap());
+        // Both rows land in the same part; the backup must hold the part as it was BEFORE any move.
+        let saved = fs::read_to_string(backup.join("docs/memory-details/01.md")).unwrap();
+        assert_eq!(saved, pristine);
+        let part = fs::read_to_string(dir.join("docs/memory-details/01.md")).unwrap();
+        assert_eq!(part.matches("demoted").count(), 2);
+        // The backup restores by relative path: the part lives where it lived.
+        assert!(backup.join("MEMORY.md").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_removes_only_the_moved_row_lines() {
+        let dir = fixture_two("lines");
+        Promoter::new(&dir).apply(180, false).unwrap();
+        let index = fs::read_to_string(dir.join("MEMORY.md")).unwrap();
+        assert!(index.contains("A fresh row."), "{index}");
+        assert!(
+            !index.contains(
+                "- **A quiet row.** (2020-01-01) — `docs/memory-details/01.md`\n- **A second"
+            ),
+            "{index}"
+        );
+        // The quotation in Notes is prose: it survives the move untouched.
+        assert!(
+            index.contains("A quotation of the row above: - **A quiet row.** (2020-01-01) — `docs/memory-details/01.md`"),
+            "{index}"
+        );
+        // The deliberate blank block is not this command's business.
+        assert!(
+            index.contains("A fresh row.") && index.contains("\n\n\nA deliberate"),
+            "{index}"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }

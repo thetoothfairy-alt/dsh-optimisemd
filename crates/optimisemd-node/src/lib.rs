@@ -46,27 +46,14 @@ fn fail(e: optimisemd_core::StoreError) -> napi::Error {
     napi::Error::from_reason(e.to_string())
 }
 
-/// The default save date: local today, YYYY-MM-DD. It lives here so the plugin's tool has no date decision in JS.
+/// The default save date: local today, YYYY-MM-DD. Computed in Rust since v0.4.8 — shelling out to
+/// `date` made every save on the Windows build fail (there is no such command there) and let a
+/// shadowed `date` decide the row's date. It lives here so the plugin's tool has no date decision in JS.
 fn today() -> napi::Result<String> {
-    let out = std::process::Command::new("date")
-        .arg("+%F")
-        .output()
-        .map_err(|e| napi::Error::from_reason(format!("cannot read the local date: {e}")))?;
-    if !out.status.success() {
-        return Err(napi::Error::from_reason(format!(
-            "the local date command failed ({}); refusing to save without a date",
-            out.status
-        )));
-    }
-    let day = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if day.is_empty() {
-        return Err(napi::Error::from_reason(
-            "the local date command returned nothing; refusing to save without a date",
-        ));
-    }
+    let day = optimisemd_core::today_local();
     if !optimisemd_core::repo::valid_date(&day) {
         return Err(napi::Error::from_reason(format!(
-            "the local date command returned {day:?}, not YYYY-MM-DD; refusing to save without a date"
+            "the local date came out as {day:?}, not YYYY-MM-DD; refusing to save without a date"
         )));
     }
     Ok(day)

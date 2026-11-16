@@ -29,5 +29,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - run: pnpm install
       - run: pnpm build
       - run: pnpm test
+      - name: the plugin entry imports cleanly
+        run: node -e "import('./index.mjs').then(() => console.log('index.mjs ok'))"

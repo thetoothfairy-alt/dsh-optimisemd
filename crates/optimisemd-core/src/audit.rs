@@ -8,12 +8,8 @@ use std::io::Write;
 use std::path::Path;
 
 pub fn record(root: &Path, action: &str, outcome: &str, files: &[String]) -> std::io::Result<()> {
-    let stamp = std::process::Command::new("date")
-        .arg("+%Y-%m-%d %H:%M:%S")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
+    // Local time computed in Rust: the `date` command was a spawn per write and an empty stamp on Windows.
+    let stamp = crate::util::local_stamp();
     let dir = root.join("memory/logs");
     std::fs::create_dir_all(&dir)?;
     let mut f = OpenOptions::new()
