@@ -27,6 +27,8 @@ dsh-optimisemd check              # the workspace's index check
 dsh-optimisemd export             # memory/logs/memento-export.md from a read-only store copy
 dsh-optimisemd index              # refresh the ranked finder
 dsh-optimisemd slim               # markdown slimming report (budgets parsed from the workspace guard)
+dsh-optimisemd counts             # check the measured block in docs/memory-process.md
+dsh-optimisemd counts --write     # regenerate it (the workspace's nightly does this and commits the line)
 dsh-optimisemd session-index      # docs/session-index.md; --check fails when stale
 dsh-optimisemd session-commits    # docs/session-commits.md over --days
 dsh-optimisemd session-digest     # memory/logs/session-digest.md

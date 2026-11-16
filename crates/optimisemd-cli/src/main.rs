@@ -6,6 +6,7 @@ use optimisemd_core::{Promoter, Store};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod counts;
 mod landmine;
 mod memindex;
 mod reports;
@@ -39,6 +40,11 @@ enum Cmd {
     Index,
     /// Measure the always-read markdown surface against a baseline commit (writes docs/md-slimming-report.md).
     Slim(SlimCliArgs),
+    /// Measure the counts in docs/memory-process.md; --write rewrites the block.
+    Counts {
+        #[arg(long)]
+        write: bool,
+    },
     /// Rebuild docs/session-index.md (every session, newest first); --check fails when the file is stale.
     SessionIndex {
         #[arg(long)]
@@ -194,6 +200,7 @@ fn run(root: &Path, cmd: Cmd) -> Result<i32, Box<dyn std::error::Error>> {
                 baseline: a.baseline.as_deref(),
             },
         ),
+        Cmd::Counts { write } => counts::run(root, write),
         Cmd::SessionIndex { check } => reports::session_index(root, check),
         Cmd::SessionCommits { days } => reports::session_commits(root, &days.to_string()),
         Cmd::SessionDigest => reports::session_digest(root),
@@ -477,7 +484,7 @@ fn store_path_write() -> Option<PathBuf> {
 }
 
 /// An existing store to read: the plugin's own, else the dsh-memento one it replaces.
-fn store_path_read() -> Option<PathBuf> {
+pub(crate) fn store_path_read() -> Option<PathBuf> {
     let home = dsh_home()?;
     let new = home.join("dsh-optimisemd/memory.db");
     if new.exists() {
