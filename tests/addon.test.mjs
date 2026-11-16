@@ -63,24 +63,14 @@ test('the Rust addon supplies the tool defaults', () => {
   }
 })
 
-test('the save date is computed in Rust; no date command can move it', () => {
-  // Updated for v0.4.8: today() no longer shells out to `date`, so the old stub-based checks are
-  // impossible BY CONSTRUCTION — and the stronger contract is testable: a lying `date` on PATH must
-  // not move the row's date, and a malformed caller date must still refuse before any write.
+test('the save date is computed in Rust and caller dates are calendar-checked', () => {
+  // v0.4.8: today() no longer shells out to `date` — there is no command left to lie about the
+  // date — and a malformed caller date must refuse before any write. (The v0.4.5 test stubbed the
+  // `date` command on PATH; that surface is gone by construction, so the stub is gone too.)
   const dir = mkdtempSync(join(tmpdir(), 'dsh-optimisemd-baddate-'))
-  const bin = join(dir, 'bin')
   try {
-    mkdirSync(bin, { recursive: true })
     mkdirSync(join(dir, 'docs/memory-details'), { recursive: true })
-    mkdirSync(join(dir, 'scripts'), { recursive: true })
-    writeFileSync(
-      join(dir, 'MEMORY.md'),
-      '# MEMORY.md\n\n## Subject facts\n- **An existing row.** (2026-01-01) — `docs/memory-details/01.md`\n',
-    )
-    writeFileSync(join(dir, 'scripts/check-memory-index.sh'), '#!/usr/bin/env bash\nexit 0\n')
-    chmodSync(join(dir, 'scripts/check-memory-index.sh'), 0o755)
-    const before = readFileSync(join(dir, 'MEMORY.md'), 'utf8')
-    const oldPath = process.env.PATH
+    writeFileSync(join(dir, 'MEMORY.md'), '# MEMORY.md\n\n## Subject facts\n- **An existing row.** (2026-01-01) — `docs/memory-details/01.md`\n')
     const attempt = (dateArg) => {
       try {
         new RepoWriter(dir).saveChecked('A fact.', dateArg, 'docs/memory-details/01.md', null, null, null, null)
@@ -89,28 +79,18 @@ test('the save date is computed in Rust; no date command can move it', () => {
         return String(e?.message ?? e)
       }
     }
-    try {
-      // A date command that answers with a wrong-path date gets no say.
-      writeFileSync(join(bin, 'date'), '#!/usr/bin/env bash\necho 2099-01-01\n')
-      chmodSync(join(bin, 'date'), 0o755)
-      process.env.PATH = `${bin}:${oldPath}`
-      new RepoWriter(dir).saveChecked('A fact.', '', 'docs/memory-details/01.md', null, null, null, null)
-      const today = localDate()
-      const body = readFileSync(join(dir, 'MEMORY.md'), 'utf8')
-      assert.match(body, new RegExp(`\\(${today}\\)`))
-      assert.doesNotMatch(body, /2099-01-01/)
-      assert.ok(existsSync(join(dir, 'memory', `${today}.md`)))
-      assert.equal(existsSync(join(dir, 'memory', '2099-01-01.md')), false)
-      // Caller-supplied dates are calendar-checked before any write.
-      for (const lying of ['2026-02-30', '2026-99-99']) {
-        assert.match(attempt(lying), /date/)
-        assert.equal(existsSync(join(dir, 'memory', `${lying}.md`)), false)
-      }
-      // The refused attempts changed nothing.
-      assert.equal(readFileSync(join(dir, 'MEMORY.md'), 'utf8'), body)
-    } finally {
-      process.env.PATH = oldPath
+    new RepoWriter(dir).saveChecked('A fact.', '', 'docs/memory-details/01.md', null, null, null, null)
+    const today = localDate()
+    const body = readFileSync(join(dir, 'MEMORY.md'), 'utf8')
+    assert.match(body, new RegExp(`\\(${today}\\)`))
+    assert.ok(existsSync(join(dir, 'memory', `${today}.md`)))
+    // Caller-supplied dates are calendar-checked before any write.
+    for (const lying of ['2026-02-30', '2026-99-99']) {
+      assert.match(attempt(lying), /date/)
+      assert.equal(existsSync(join(dir, 'memory', `${lying}.md`)), false)
     }
+    // The refused attempts changed nothing.
+    assert.equal(readFileSync(join(dir, 'MEMORY.md'), 'utf8'), body)
   } finally {
     try { rmSync(dir, { recursive: true, force: true }) } catch {}
   }

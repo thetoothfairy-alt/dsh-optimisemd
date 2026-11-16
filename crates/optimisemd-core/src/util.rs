@@ -56,9 +56,10 @@ pub fn local_datetime(epoch: i64) -> String {
         .unwrap_or_else(local_now)
 }
 
-/// Run a workspace script as a gate: directly (a shim or the binary itself), then through `bash`,
-/// then `sh`. Windows cannot execute a .sh directly, and its shells want the file NAME from the
-/// script's own directory rather than a Windows path — so the fallbacks are built that way.
+/// Run a workspace script as a gate: directly (a shim or the binary itself), then through a shell.
+/// Windows cannot execute a .sh directly and its shells want the file NAME from the script's own
+/// directory rather than a Windows path; the standard Git-bash locations are tried explicitly
+/// because a plain test process on a Windows runner has no shell on PATH.
 pub fn run_script(script: &Path, direct_cwd: &Path) -> std::io::Result<std::process::Output> {
     use std::process::Command;
     if let Ok(out) = Command::new(script).current_dir(direct_cwd).output() {
@@ -69,12 +70,19 @@ pub fn run_script(script: &Path, direct_cwd: &Path) -> std::io::Result<std::proc
         .file_name()
         .map(std::ffi::OsString::from)
         .unwrap_or_default();
-    if let Ok(out) = Command::new("bash")
-        .arg(&name)
-        .current_dir(&parent)
-        .output()
-    {
-        return Ok(out);
+    const SHELLS: [&str; 5] = [
+        "bash",
+        "sh",
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files\Git\usr\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+    ];
+    let mut last: Option<std::io::Error> = None;
+    for shell in SHELLS {
+        match Command::new(shell).arg(&name).current_dir(&parent).output() {
+            Ok(out) => return Ok(out),
+            Err(e) => last = Some(e),
+        }
     }
-    Command::new("sh").arg(&name).current_dir(&parent).output()
+    Err(last.unwrap_or_else(|| std::io::Error::other("no shell could run the gate")))
 }
