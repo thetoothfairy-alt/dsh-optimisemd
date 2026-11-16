@@ -407,6 +407,8 @@ fn session_commits_labels_a_joined_session_missing_from_the_index() {
     assert!(report.contains("(not in the index)"), "{report}");
 }
 
+// chmod 000 has no Windows meaning: this refusal is a unix contract.
+#[cfg(unix)]
 #[test]
 fn log_index_refuses_an_unreadable_day_file() {
     use std::os::unix::fs::PermissionsExt;
@@ -588,6 +590,8 @@ fn find_refuses_without_the_finder_binary() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("no dsh-belfind"));
 }
 
+// The historical-name dispatch runs through a symlink and a bash stub: a unix contract.
+#[cfg(unix)]
 #[test]
 fn the_historical_wrapper_names_dispatch() {
     let root = temp("alias");

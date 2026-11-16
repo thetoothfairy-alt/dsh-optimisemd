@@ -37,6 +37,8 @@ fn run(root: &Path, home: &Path, args: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
+// The finder stub is a bash script the binary executes directly: a unix contract.
+#[cfg(unix)]
 #[test]
 fn find_does_not_hijack_a_question_that_starts_with_index() {
     let root = temp("find");

@@ -352,10 +352,17 @@ impl Repo {
             let _ = crate::audit::record(&self.root, "save", "applied", &touched);
             return Ok(written);
         }
-        // Run the checker directly: the wrapper may be a shim or the binary itself; `bash <binary>` cannot execute.
+        // Run the checker directly: the wrapper may be a shim or the binary itself; `bash <binary>` cannot
+        // execute. Windows cannot execute a .sh directly either, so a failed spawn retries through bash.
         let gate = std::process::Command::new(&script)
             .current_dir(&self.root)
-            .output();
+            .output()
+            .or_else(|_| {
+                std::process::Command::new("bash")
+                    .arg(&script)
+                    .current_dir(&self.root)
+                    .output()
+            });
         if gate.as_ref().map(|o| o.status.success()).unwrap_or(false) {
             let _ = crate::audit::record(&self.root, "save", "applied", &touched);
             return Ok(written);
