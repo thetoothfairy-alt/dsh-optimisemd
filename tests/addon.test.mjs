@@ -22,7 +22,7 @@ test('add, usage, snapshot and query round-trip', () => {
     assert.match(snap, /\[user\/user-global\]\n- Prefer small, plain answers\./)
     assert.deepEqual(store.query('plain', 5, 's1').map((e) => e.text), ['Prefer small, plain answers.'])
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    try { rmSync(dir, { recursive: true, force: true }) } catch {}
   }
 })
 
@@ -32,7 +32,7 @@ test('the cap refuses instead of growing; consolidate is the only route', () => 
     store.add('user', 'user-global', 'x'.repeat(1990), [], 'test', '/ws', '', 's1')
     assert.throws(() => store.add('user', 'user-global', 'y'.repeat(20), [], 'test', '/ws', '', 's1'), /budget/)
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    try { rmSync(dir, { recursive: true, force: true }) } catch {}
   }
 })
 
@@ -49,7 +49,7 @@ test('replace and remove need exactly one match', () => {
     assert.match(removed.text, /second fact/)
     assert.equal(store.listEntries().length, 1)
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    try { rmSync(dir, { recursive: true, force: true }) } catch {}
   }
 })
 
@@ -62,6 +62,6 @@ test('a workspace entry is invisible in another workspace', () => {
     assert.match(other, /everywhere/)
     assert.doesNotMatch(other, /only here/)
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    try { rmSync(dir, { recursive: true, force: true }) } catch {}
   }
 })

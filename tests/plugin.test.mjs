@@ -33,7 +33,7 @@ test('the tool executes against the store and refuses empty text', async () => {
     const found = await executeMemoryAction(store, { action: 'query', text: 'plain' }, exec)
     assert.equal(found.entries.length, 1)
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    try { rmSync(dir, { recursive: true, force: true }) } catch {}
   }
 })
 
@@ -53,6 +53,6 @@ test('memory_save writes the row, the part section and the day line', async () =
     assert.equal(bad.ok, false)
     assert.match(bad.error, /pointer refused/)
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    try { rmSync(dir, { recursive: true, force: true }) } catch {}
   }
 })
