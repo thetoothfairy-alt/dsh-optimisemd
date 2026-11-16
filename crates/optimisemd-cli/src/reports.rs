@@ -65,7 +65,16 @@ pub fn transcript_files(home: &str, ws: &str) -> Vec<(String, std::path::PathBuf
         };
         let mut logs: Vec<std::path::PathBuf> = entries
             .flatten()
-            .map(|e| e.path().join("session.v4.jsonl.zstd"))
+            .filter(|e| e.path().is_dir())
+            .map(|e| {
+                let d = e.path();
+                let z = d.join("session.v4.jsonl.zstd");
+                if z.exists() {
+                    z
+                } else {
+                    d.join("session.v4.jsonl")
+                }
+            })
             .filter(|p| p.exists())
             .collect();
         logs.sort();
@@ -75,6 +84,22 @@ pub fn transcript_files(home: &str, ws: &str) -> Vec<(String, std::path::PathBuf
 }
 
 /// Clip at n characters, with an ellipsis only when something was cut.
+/// The transcript text: zstd when the file is compressed, plain text otherwise (older/uncompressed fixtures).
+fn transcript_text(path: &Path) -> Option<String> {
+    if path.to_string_lossy().ends_with(".zstd") {
+        let out = Command::new("zstd")
+            .args(["-dc", &path.to_string_lossy()])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        fs::read_to_string(path).ok()
+    }
+}
+
 fn clip(s: &str, n: usize) -> String {
     if s.chars().count() > n {
         format!("{}…", take(s, n))
@@ -167,15 +192,10 @@ pub fn session_index(root: &Path, check: bool) -> Result<i32, Box<dyn std::error
     let mut rows: Vec<Row> = Vec::new();
     let files = transcript_files(&home, &ws);
     for (kind, log) in &files {
-        let bytes = match Command::new("zstd")
-            .args(["-dc", &log.to_string_lossy()])
-            .output()
-        {
-            Ok(o) => o.stdout,
-            Err(_) => continue,
+        let Some(text) = transcript_text(log) else {
+            continue;
         };
-        let head = &bytes[..bytes.len().min(200_000)];
-        let text = String::from_utf8_lossy(head).into_owned();
+        let text: String = text.chars().take(200_000).collect();
         let sid = log
             .parent()
             .and_then(|p| p.file_name())
@@ -218,7 +238,7 @@ pub fn session_index(root: &Path, check: bool) -> Result<i32, Box<dyn std::error
             title: title.replace('\n', " "),
             kind: kind.clone(),
             size,
-            lines: bytes.iter().filter(|b| **b == b'\n').count(),
+            lines: text.bytes().filter(|b| *b == b'\n').count(),
         });
     }
     if !check && rows.is_empty() {
@@ -368,6 +388,12 @@ pub fn session_commits(root: &Path, days: &str) -> Result<i32, Box<dyn std::erro
                 titles.insert(caps[2].to_string(), caps[3].trim().to_string());
             }
         }
+    }
+    if titles.is_empty() {
+        eprintln!(
+            "session-commits: no titles read from docs/session-index.md — run session-index first (an empty index is not a blank-title report)"
+        );
+        return Ok(1);
     }
     let mut sessions: Vec<(&String, &Vec<Commit>)> =
         order.iter().map(|sid| (sid, &joined[sid])).collect();
@@ -532,14 +558,9 @@ pub fn session_digest(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
     transcripts.sort();
     let mut rows: Vec<(i64, String)> = Vec::new();
     for f in &transcripts {
-        let bytes = match Command::new("zstd")
-            .args(["-dc", &f.to_string_lossy()])
-            .output()
-        {
-            Ok(o) => o.stdout,
-            Err(_) => continue,
+        let Some(text) = transcript_text(f) else {
+            continue;
         };
-        let text = String::from_utf8_lossy(&bytes).into_owned();
         let path_s = f.to_string_lossy().into_owned();
         let sid = path_s
             .split("/session-")
