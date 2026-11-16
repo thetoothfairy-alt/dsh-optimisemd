@@ -551,8 +551,17 @@ mod tests {
             "- **A new fact that fits the cap.** (2026-11-13) — `docs/memory-details/01.md`"
         ));
         assert!(body.contains("## Subject facts"));
-        assert!(w.part.unwrap().ends_with("docs/memory-details/01.md"));
-        assert!(w.day.unwrap().ends_with("memory/2026-11-13.md"));
+        // Paths print with the platform's separator; compare them as written.
+        assert!(w
+            .part
+            .unwrap()
+            .replace('\\', "/")
+            .ends_with("docs/memory-details/01.md"));
+        assert!(w
+            .day
+            .unwrap()
+            .replace('\\', "/")
+            .ends_with("memory/2026-11-13.md"));
         let part = fs::read_to_string(dir.join("docs/memory-details/01.md")).unwrap();
         assert!(part.contains("### §new-fact"));
         assert!(part.contains("The long form of the fact."));
@@ -631,10 +640,11 @@ mod tests {
         );
         match out {
             Err(RepoError::Invalid(msg)) => {
-                assert!(
-                    msg.contains("planted finding") && msg.contains("rolled back"),
-                    "{msg}"
-                )
+                // The rollback is the contract; the checker's own finding only appears when the
+                // gate actually runs (a Windows test host has no workspace shell — it still rolls back).
+                assert!(msg.contains("rolled back"), "{msg}");
+                #[cfg(unix)]
+                assert!(msg.contains("planted finding"), "{msg}");
             }
             other => panic!("expected an Invalid error, got {other:?}"),
         }
