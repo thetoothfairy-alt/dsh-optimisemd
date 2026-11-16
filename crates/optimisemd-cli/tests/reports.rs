@@ -265,6 +265,72 @@ fn session_commits_counts_unjoined_commits_when_there_are_no_trailers() {
 }
 
 #[test]
+fn digest_rows_carry_the_id_from_a_plain_session_folder() {
+    let root = temp("digest-id");
+    let home = temp("digest-id-home");
+    let ws = ws_key(&root);
+    transcript(
+        &home
+            .join("sessions")
+            .join(&ws)
+            .join("1111aaaa-2222-3333-4444-555555555555"),
+        "{\"type\":\"session/title\",\"data\":{\"title\":\"Plain folder title\"}}\n\
+         {\"type\":\"user/message\",\"data\":{\"content\":[{\"type\":\"text\",\
+         \"text\":\"A question about the plain folder session id\"}]}}\n",
+    );
+    let out = run(&root, &home, &["session-digest"]);
+    assert!(out.status.success());
+    let digest = fs::read_to_string(root.join("memory/logs/session-digest.md")).unwrap();
+    assert!(digest.contains("1111aaaa"), "{digest}");
+}
+
+#[test]
+fn session_commits_labels_a_joined_session_missing_from_the_index() {
+    let root = temp("commits-missing");
+    fs::create_dir_all(root.join("docs")).unwrap();
+    fs::write(
+        root.join("docs/session-index.md"),
+        "| # | Started | Session | Parent | Title | Size | Lines |\n\
+         |---|---|---|---|---|---|---|\n\
+         | 1 | 2026-11-16 10:00 | `deadbeef` |  | Another session | 1 KB | 1 |\n",
+    )
+    .unwrap();
+    git(&root, &["init", "-q"]);
+    fs::write(root.join("a.txt"), "a").unwrap();
+    git(&root, &["add", "a.txt"]);
+    git(
+        &root,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "First work\n\nDsh-Session: abcdef12-3456",
+        ],
+    );
+    let home = temp("commits-missing-home");
+    let out = run(&root, &home, &["session-commits", "--days", "30"]);
+    assert!(out.status.success());
+    let report = fs::read_to_string(root.join("docs/session-commits.md")).unwrap();
+    assert!(report.contains("(not in the index)"), "{report}");
+}
+
+#[test]
+fn log_index_refuses_an_unreadable_day_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = temp("log-unreadable");
+    fs::create_dir_all(root.join("docs")).unwrap();
+    fs::create_dir_all(root.join("memory")).unwrap();
+    let day = root.join("memory/2026-01-01.md");
+    fs::write(&day, "# 2026-01-01\n\n## A topic\n").unwrap();
+    fs::set_permissions(&day, fs::Permissions::from_mode(0o000)).unwrap();
+    let home = temp("log-unreadable-home");
+    let out = run(&root, &home, &["log-index"]);
+    let _ = fs::set_permissions(&day, fs::Permissions::from_mode(0o644));
+    assert!(!out.status.success());
+    assert!(!root.join("docs/memory-log-index.md").exists());
+}
+
+#[test]
 fn tier0_history_without_a_store_exits_two() {
     let root = temp("tier0-nostore");
     let home = temp("tier0-nostore-home");
