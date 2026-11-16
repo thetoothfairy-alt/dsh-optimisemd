@@ -566,6 +566,8 @@ fn check_selftest_proves_the_unparseable_row_finding() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("selftest PASS"));
 }
 
+// The finder stub is a bash script executed directly: a unix contract (the workspace tool runs on WSL).
+#[cfg(unix)]
 #[test]
 fn find_runs_the_finder_and_reindexes() {
     let root = temp("find");
