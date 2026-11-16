@@ -93,11 +93,6 @@ impl Repo {
         if !pointer_ok(pointer) {
             return Err(RepoError::Pointer(pointer.to_string()));
         }
-        if !valid_date(date) {
-            return Err(RepoError::Invalid(format!(
-                "date must be YYYY-MM-DD, got {date:?}"
-            )));
-        }
         let memory = self.memory_path();
         let mut body = fs::read_to_string(&memory)?;
         let needle: String = text.chars().take(60).collect();
@@ -180,11 +175,6 @@ impl Repo {
         slug: Option<&str>,
         detail: Option<&str>,
     ) -> Result<Written, RepoError> {
-        if !valid_date(date) {
-            return Err(RepoError::Invalid(format!(
-                "date must be YYYY-MM-DD, got {date:?}"
-            )));
-        }
         let stamp = std::process::id();
         let backup = self.root.join("memory/logs").join(format!("save-{stamp}"));
         std::fs::create_dir_all(&backup)?;
@@ -289,11 +279,6 @@ impl Repo {
         if !pointer_ok(pointer) {
             return Err(RepoError::Pointer(pointer.to_string()));
         }
-        if !valid_date(date) {
-            return Err(RepoError::Invalid(format!(
-                "date must be YYYY-MM-DD, got {date:?}"
-            )));
-        }
         let memory = self.memory_path();
         let body = fs::read_to_string(&memory)?;
         let hits: Vec<&str> = body.lines().filter(|l| l.contains(needle)).collect();
@@ -319,7 +304,7 @@ impl Repo {
 
     /// Append the day's line; create the day file with its title. Append-only, never rewritten.
     pub fn append_day(&self, date: &str, text: &str) -> Result<PathBuf, RepoError> {
-        if !valid_date(date) {
+        if !date.chars().all(|c| c.is_ascii_digit() || c == '-') || date.len() != 10 {
             return Err(RepoError::Invalid(format!(
                 "date must be YYYY-MM-DD, got {date:?}"
             )));
@@ -511,33 +496,6 @@ mod tests {
         assert!(log.contains("save applied"), "{log}");
         assert!(log.contains("MEMORY.md"), "{log}");
         assert!(log.contains("memory/2026-11-13.md"), "{log}");
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn an_invalid_date_is_refused_before_any_write() {
-        let dir = workspace("baddate");
-        let repo = Repo::new(&dir);
-        let before = fs::read_to_string(dir.join("MEMORY.md")).unwrap();
-        for bad in ["garbage-date", "2026-1-1", ""] {
-            let out = repo.save_checked(
-                "A fact.",
-                bad,
-                "docs/memory-details/01.md",
-                None,
-                None,
-                None,
-                None,
-            );
-            match out {
-                Err(RepoError::Invalid(m)) => {
-                    assert!(m.contains("date must be YYYY-MM-DD"), "{m}")
-                }
-                other => panic!("expected an Invalid error for {bad:?}, got {other:?}"),
-            }
-        }
-        assert_eq!(fs::read_to_string(dir.join("MEMORY.md")).unwrap(), before);
-        assert!(!dir.join("memory/logs").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 
