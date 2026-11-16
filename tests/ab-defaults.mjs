@@ -58,8 +58,17 @@ const runSide = async (side, root) => {
   const log = (name, value) => ({ name, value: normalize(value, base) })
 
   const out = []
+  const renderMemory = (side, value) =>
+    side === 'A'
+      ? action.renderMemoryResult(undefined, value)[0].text
+      : addon.renderMemory(JSON.stringify(value))
+  const renderSave = (side, value) =>
+    side === 'A'
+      ? repo.renderRepoResult(undefined, value)[0].text
+      : addon.renderSave(JSON.stringify(value))
   const add = await action.executeMemoryAction(store, { action: 'add', text: 'A fact for the A/B.' }, exec)
   out.push(log('add', add))
+  out.push({ name: 'render-add', value: normalize(renderMemory(side, add), base) })
   out.push(log('entries-after-add', { entries: store.listEntries(), usage: store.usage() }))
   const binary = execFileSync(BIN, ['tier0', 'list'], {
     env: { ...process.env, DSH_HOME: dshhome },
@@ -67,13 +76,20 @@ const runSide = async (side, root) => {
   })
   out.push({ name: 'binary-read', value: binary.replace(storePath, '<store>') })
 
-  out.push(log('query', await action.executeMemoryAction(store, { action: 'query', text: 'A/B' }, exec)))
-  out.push(log('replace', await action.executeMemoryAction(store, { action: 'replace', match: 'A fact for the A/B', text: 'A replaced fact.' }, exec)))
-  out.push(log('remove', await action.executeMemoryAction(store, { action: 'remove', match: 'A replaced fact' }, exec)))
+  const query = await action.executeMemoryAction(store, { action: 'query', text: 'A/B' }, exec)
+  out.push(log('query', query))
+  out.push({ name: 'render-query', value: normalize(renderMemory(side, query), base) })
+  const replaced = await action.executeMemoryAction(store, { action: 'replace', match: 'A fact for the A/B', text: 'A replaced fact.' }, exec)
+  out.push(log('replace', replaced))
+  out.push({ name: 'render-replace', value: normalize(renderMemory(side, replaced), base) })
+  const removed = await action.executeMemoryAction(store, { action: 'remove', match: 'A replaced fact' }, exec)
+  out.push(log('remove', removed))
+  out.push({ name: 'render-remove', value: normalize(renderMemory(side, removed), base) })
   out.push(log('entries-after-remove', { entries: store.listEntries(), usage: store.usage() }))
 
   const saved = await repo.executeRepoAction(addon.RepoWriter, { text: 'A saved fact for the A/B.', pointer: 'docs/memory-details/01.md' }, exec)
   out.push(log('save', saved))
+  out.push({ name: 'render-save', value: normalize(renderSave(side, saved), base) })
   const files = {
     memory: readFileSync(join(workspace, 'MEMORY.md'), 'utf8'),
     day: saved.day ? readFileSync(saved.day, 'utf8') : null,
@@ -85,7 +101,9 @@ const runSide = async (side, root) => {
   out.push({ name: 'files', value: { memory: files.memory, day: files.day } })
   out.push({ name: 'repo-writes-log', value: auditLog })
 
-  out.push(log('refused-save', await repo.executeRepoAction(addon.RepoWriter, { text: 'A refused fact.', pointer: 'not-a-pointer' }, exec)))
+  const refused = await repo.executeRepoAction(addon.RepoWriter, { text: 'A refused fact.', pointer: 'not-a-pointer' }, exec)
+  out.push(log('refused-save', refused))
+  out.push({ name: 'render-refused', value: normalize(renderSave(side, refused), base) })
   return out
 }
 

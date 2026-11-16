@@ -542,3 +542,76 @@ fn the_daily_log_index_lists_the_day_and_its_topics() {
     assert!(report.contains("2026-01-01"), "{report}");
     assert!(report.contains("A topic worth indexing"), "{report}");
 }
+
+#[test]
+fn check_selftest_proves_the_unparseable_row_finding() {
+    let root = temp("selftest");
+    let home = temp("selftest-home");
+    let out = run(&root, &home, &["check", "--selftest"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("selftest PASS"));
+}
+
+#[test]
+fn find_runs_the_finder_and_reindexes() {
+    let root = temp("find");
+    let home = temp("find-home");
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    let stub = root.join("bin/dsh-belfind");
+    std::fs::write(&stub, "#!/usr/bin/env bash\nprintf 'stub %s\\n' \"$*\"\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::create_dir_all(root.join("memory/logs")).unwrap();
+    for f in ["session-digest.md", "memento-export.md", "find-index.json"] {
+        std::fs::write(root.join("memory/logs").join(f), "").unwrap();
+    }
+    let out = run(&root, &home, &["find", "hello", "world"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("stub find hello world"), "{text}");
+    let out = run(&root, &home, &["find", "--reindex"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("stub index"));
+}
+
+#[test]
+fn find_refuses_without_the_finder_binary() {
+    let root = temp("find-bare");
+    let home = temp("find-bare-home");
+    let out = run(&root, &home, &["find", "x"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no dsh-belfind"));
+}
+
+#[test]
+fn the_historical_wrapper_names_dispatch() {
+    let root = temp("alias");
+    let home = temp("alias-home");
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    let stub = root.join("bin/dsh-belfind");
+    std::fs::write(&stub, "#!/usr/bin/env bash\nprintf 'stub %s\\n' \"$*\"\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::create_dir_all(root.join("memory/logs")).unwrap();
+        for f in ["session-digest.md", "memento-export.md", "find-index.json"] {
+            std::fs::write(root.join("memory/logs").join(f), "").unwrap();
+        }
+        let link = root.join("find.sh");
+        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_dsh-optimisemd"), &link).unwrap();
+        let out = std::process::Command::new(&link)
+            .arg("hello")
+            .current_dir(&root)
+            .env("DSH_HOME", &home)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("stub find hello"));
+    }
+}

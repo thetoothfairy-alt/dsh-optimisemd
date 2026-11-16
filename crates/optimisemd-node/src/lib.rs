@@ -298,3 +298,92 @@ impl RepoWriter {
             .map_err(|e| napi::Error::from_reason(e.to_string()))
     }
 }
+
+/// The tool's rendered line, in Rust: the plugin's JavaScript only hands the result over.
+#[napi]
+pub fn render_memory(json: String) -> String {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else {
+        return format!("memory: could not read the result ({json})");
+    };
+    let text = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let ok = v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
+    let action = text("action");
+    if !ok {
+        return format!("memory {action} failed: {}", text("error"));
+    }
+    let budget = v
+        .get("usage")
+        .map(|u| {
+            let n = |k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+            format!(
+                " (user {}/{}, agent {}/{})",
+                n("userUsed"),
+                n("userCap"),
+                n("agentUsed"),
+                n("agentCap")
+            )
+        })
+        .unwrap_or_default();
+    match action.as_str() {
+        "query" => {
+            let entries = v
+                .get("entries")
+                .and_then(|e| e.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if entries.is_empty() {
+                "memory query: no matches".to_string()
+            } else {
+                let parts: Vec<String> = entries
+                    .iter()
+                    .map(|e| {
+                        format!(
+                            "[{}/{}] {}",
+                            e.get("track").and_then(|x| x.as_str()).unwrap_or(""),
+                            e.get("scope").and_then(|x| x.as_str()).unwrap_or(""),
+                            e.get("text").and_then(|x| x.as_str()).unwrap_or("")
+                        )
+                    })
+                    .collect();
+                format!("memory query: {}", parts.join(" | "))
+            }
+        }
+        "add" => format!("memory added{budget}"),
+        "replace" | "remove" => {
+            let entry = v.get("entry");
+            let track = entry
+                .and_then(|x| x.get("track"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            let scope = entry
+                .and_then(|x| x.get("scope"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            format!("memory {action}d [{track}/{scope}]{budget}")
+        }
+        _ => format!("memory {action}: ok"),
+    }
+}
+
+/// The save tool's rendered line, in Rust.
+#[napi]
+pub fn render_save(json: String) -> String {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else {
+        return format!("memory_save: could not read the result ({json})");
+    };
+    let text = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let ok = v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
+    if !ok {
+        return format!("memory_save failed: {}", text("error"));
+    }
+    let mut out = format!("saved: {}", text("row"));
+    let part = text("part");
+    if !part.is_empty() {
+        out.push_str(&format!(" · part {part}"));
+    }
+    let day = text("day");
+    if !day.is_empty() {
+        out.push_str(&format!(" · {day}"));
+    }
+    out
+}

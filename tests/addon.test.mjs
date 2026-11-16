@@ -111,6 +111,26 @@ test('a bad date command is refused before any write', () => {
   }
 })
 
+test('the addon renders the tool text', () => {
+  const { renderMemory, renderSave } = loadNative()
+  assert.equal(
+    renderMemory(JSON.stringify({ ok: true, action: 'add', usage: { userUsed: 0, userCap: 2000, agentUsed: 19, agentCap: 4000 } })),
+    'memory added (user 0/2000, agent 19/4000)',
+  )
+  assert.equal(renderMemory(JSON.stringify({ ok: true, action: 'query', entries: [] })), 'memory query: no matches')
+  assert.equal(
+    renderMemory(JSON.stringify({ ok: true, action: 'query', entries: [{ track: 'user', scope: 'user-global', text: 'A.' }] })),
+    'memory query: [user/user-global] A.',
+  )
+  assert.equal(
+    renderMemory(JSON.stringify({ ok: true, action: 'replace', entry: { track: 'agent', scope: 'workspace' }, usage: { userUsed: 0, userCap: 0, agentUsed: 1, agentCap: 2 } })),
+    'memory replaced [agent/workspace] (user 0/0, agent 1/2)',
+  )
+  assert.equal(renderMemory(JSON.stringify({ ok: false, action: 'add', error: 'x' })), 'memory add failed: x')
+  assert.equal(renderSave(JSON.stringify({ ok: true, row: 'r', part: 'p', day: 'd' })), 'saved: r · part p · d')
+  assert.equal(renderSave(JSON.stringify({ ok: false, error: 'e' })), 'memory_save failed: e')
+})
+
 test('the cap refuses instead of growing; consolidate is the only route', () => {
   const { store, dir } = fresh()
   try {

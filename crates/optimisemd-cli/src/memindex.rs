@@ -195,3 +195,34 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
     );
     Ok(if findings.is_empty() { 0 } else { 1 })
 }
+
+/// The old `check-memory-index.sh --selftest`: a temp fixture must still produce the unparseable-row finding.
+pub fn selftest() -> Result<i32, Box<dyn Error>> {
+    let dir = std::env::temp_dir().join(format!("dsh-optimisemd-selftest-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("docs"))?;
+    fs::write(dir.join("docs/hard-won.md"), "# Landmines\n")?;
+    fs::write(
+        dir.join("MEMORY.md"),
+        "# MEMORY.md\n\n## Subject facts\n- **A well formed row.** (2026-10-25) — `docs/hard-won.md`\n- **A row with text after its pointer.** — `docs/hard-won.md` (round 69)\n",
+    )?;
+    let out = std::process::Command::new(std::env::current_exe()?)
+        .arg("--root")
+        .arg(&dir)
+        .arg("check")
+        .output()?;
+    let code = out.status.code().unwrap_or(-1);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = fs::remove_dir_all(&dir);
+    if code == 1 && text.contains("does not end in a backticked") {
+        println!("selftest PASS — the unparseable-row finding still fires");
+        Ok(0)
+    } else {
+        eprintln!("selftest FAIL — the unparseable-row finding did not fire (exit {code})");
+        Ok(1)
+    }
+}

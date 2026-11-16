@@ -1,7 +1,7 @@
 //! dsh-optimisemd — the command line the workspace's nightlies call. One binary owns promotion, the checks gate, the
 //! tier-0 export and the finder refresh, so the shell scripts become either thin aliases or disappear.
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use optimisemd_core::{Promoter, Store};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -33,11 +33,23 @@ enum Cmd {
     Check {
         /// Files to check; empty means the workspace default.
         targets: Vec<String>,
+        /// Run the self-test: a temp fixture must still produce the unparseable-row finding.
+        #[arg(long)]
+        selftest: bool,
     },
     /// Write memory/logs/memento-export.md from a read-only copy of the tier-0 store.
     Export,
     /// Rebuild the ranked finder index (delegates to the workspace's finder).
     Index,
+    /// Ask the ranked finder; regenerates a missing corpus first. --reindex rebuilds the index instead.
+    Find {
+        /// Rebuild the index instead of searching.
+        #[arg(long)]
+        reindex: bool,
+        /// The question (plain words); passed to the finder.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        query: Vec<String>,
+    },
     /// Measure the always-read markdown surface against a baseline commit (writes docs/md-slimming-report.md).
     Slim(SlimCliArgs),
     /// Measure the counts in docs/memory-process.md; --write rewrites the block.
@@ -182,7 +194,28 @@ struct PromoteArgs {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    // The historical names survive as symlinks; when invoked through one, insert the subcommand those names mean.
+    let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if let Some(name) = args
+        .first()
+        .and_then(|a| Path::new(a).file_name())
+        .and_then(|n| n.to_str())
+    {
+        let sub: Option<&[&str]> = match name {
+            "check-memory-index" | "check-memory-index.sh" => Some(&["check"]),
+            "check-memento" | "check-memento.sh" => Some(&["tier0", "verify"]),
+            "memory-counts" | "memory-counts.sh" => Some(&["counts"]),
+            "find" | "find.sh" => Some(&["find"]),
+            _ => None,
+        };
+        if let Some(sub) = sub {
+            let mut next: Vec<std::ffi::OsString> = vec![args.remove(0)];
+            next.extend(sub.iter().map(std::ffi::OsString::from));
+            next.extend(args);
+            args = next;
+        }
+    }
+    let cli = Cli::parse_from(args);
     let root = reports::canonical_root(&cli.root);
     let code = match run(&root, cli.cmd) {
         Ok(c) => c,
@@ -197,9 +230,16 @@ fn main() {
 fn run(root: &Path, cmd: Cmd) -> Result<i32, Box<dyn std::error::Error>> {
     match cmd {
         Cmd::Promote(a) => promote(root, a),
-        Cmd::Check { targets } => memindex::run(root, targets),
+        Cmd::Check { targets, selftest } => {
+            if selftest {
+                memindex::selftest()
+            } else {
+                memindex::run(root, targets)
+            }
+        }
         Cmd::Export => export(root),
         Cmd::Index => index(root),
+        Cmd::Find { reindex, query } => find(root, reindex, query),
         Cmd::Slim(a) => slim::run(
             root,
             slim::SlimArgs {
@@ -594,28 +634,74 @@ fn export(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
     Ok(0)
 }
 
-fn index(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
-    let script = root.join("scripts/find.sh");
-    if !script.exists() {
-        eprintln!("index: no scripts/find.sh under {}", root.display());
-        return Ok(2);
+/// The finder binary: the installed one first, then the tool's build output.
+fn finder(root: &Path) -> Option<PathBuf> {
+    let installed = root.join("bin/dsh-belfind");
+    if installed.exists() {
+        return Some(installed);
     }
-    let status = Command::new("bash")
-        .arg(&script)
-        .arg("--reindex")
-        .current_dir(root)
-        .status()?;
+    let built = root.join("tools/belfind/target/release/dsh-belfind");
+    built.exists().then_some(built)
+}
+
+fn index(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
+    let Some(bin) = finder(root) else {
+        eprintln!("index: no dsh-belfind binary: (cd tools/belfind && cargo build --release)");
+        return Ok(2);
+    };
+    let status = Command::new(bin).arg("index").current_dir(root).status()?;
+    Ok(status.code().unwrap_or(1))
+}
+
+fn find(root: &Path, reindex: bool, query: Vec<String>) -> Result<i32, Box<dyn std::error::Error>> {
+    let Some(bin) = finder(root) else {
+        eprintln!("find: no dsh-belfind binary: (cd tools/belfind && cargo build --release)");
+        return Ok(1);
+    };
+    let mut reindex = reindex;
+    let mut query = query;
+    if query.first().map(|q| q == "index").unwrap_or(false) {
+        reindex = true;
+        query.remove(0);
+    }
+    if !reindex && query.is_empty() {
+        let mut cmd = Cli::command();
+        if let Some(sub) = cmd.find_subcommand_mut("find") {
+            sub.print_help()?;
+        }
+        return Ok(0);
+    }
+    // A fresh checkout or a cleaned corpus must not silently answer from less: rebuild what the finder reads.
+    let pieces = [
+        "memory/logs/session-digest.md",
+        "memory/logs/memento-export.md",
+        "memory/logs/find-index.json",
+    ];
+    if pieces.iter().any(|p| !root.join(p).exists()) {
+        if let Err(e) = reports::session_digest(root) {
+            eprintln!("warning: session digest could not be regenerated — historical search may be incomplete: {e}");
+        }
+        let _ = export_inner(root);
+        let _ = Command::new(&bin).arg("index").current_dir(root).status();
+    }
+    let mut cmd = Command::new(&bin);
+    cmd.current_dir(root);
+    if reindex {
+        cmd.arg("index");
+    } else {
+        cmd.arg("find");
+    }
+    cmd.args(&query);
+    let status = cmd.status()?;
     Ok(status.code().unwrap_or(1))
 }
 
 /// A store write is only useful once the finder can see it: refresh the export and the index the way the nightly does.
 fn refresh(root: &Path) {
     let _ = export_inner(root);
-    let _ = Command::new("bash")
-        .arg(root.join("scripts/find.sh"))
-        .arg("--reindex")
-        .current_dir(root)
-        .status();
+    if let Some(bin) = finder(root) {
+        let _ = Command::new(bin).arg("index").current_dir(root).status();
+    }
 }
 
 fn export_inner(root: &Path) -> Result<usize, Box<dyn std::error::Error>> {

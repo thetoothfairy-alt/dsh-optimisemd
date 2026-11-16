@@ -6,8 +6,8 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import Schema from '@deepseek-ai/schemastery'
 import { dbPathOf, loadNative } from './lib/native.mjs'
-import { MEMORY_DESCRIPTION, MEMORY_OUTPUT_SCHEMA, MEMORY_PARAMETERS, executeMemoryAction, renderMemoryResult } from './lib/action.mjs'
-import { SAVE_DESCRIPTION, SAVE_OUTPUT_SCHEMA, SAVE_PARAMETERS, executeRepoAction, renderRepoResult } from './lib/repo-action.mjs'
+import { MEMORY_DESCRIPTION, MEMORY_OUTPUT_SCHEMA, MEMORY_PARAMETERS, executeMemoryAction } from './lib/action.mjs'
+import { SAVE_DESCRIPTION, SAVE_OUTPUT_SCHEMA, SAVE_PARAMETERS, executeRepoAction } from './lib/repo-action.mjs'
 
 export const name = 'memory'
 export const inject = ['tools', 'systemPrompt']
@@ -22,22 +22,22 @@ export const Config = Schema.object({
   snapshotOrder: Schema.number().default(DEFAULT_SNAPSHOT_ORDER).description('systemPrompt section order'),
 })
 
-export function makeSaveTool(RepoWriter) {
+export function makeSaveTool(RepoWriter, native) {
   return defineTool({
     name: 'memory_save',
     description: SAVE_DESCRIPTION,
     parameters: SAVE_PARAMETERS,
-    output: { schema: SAVE_OUTPUT_SCHEMA, render: renderRepoResult },
+    output: { schema: SAVE_OUTPUT_SCHEMA, render: (_args, value) => [{ type: 'text', text: native.renderSave(JSON.stringify(value)) }] },
     execute: (args, exec) => executeRepoAction(RepoWriter, args, exec),
   })
 }
 
-export function makeMemoryTool(store) {
+export function makeMemoryTool(store, native) {
   return defineTool({
     name: 'memory',
     description: MEMORY_DESCRIPTION,
     parameters: MEMORY_PARAMETERS,
-    output: { schema: MEMORY_OUTPUT_SCHEMA, render: renderMemoryResult },
+    output: { schema: MEMORY_OUTPUT_SCHEMA, render: (_args, value) => [{ type: 'text', text: native.renderMemory(JSON.stringify(value)) }] },
     execute: (args, exec) => executeMemoryAction(store, args, exec),
   })
 }
@@ -48,8 +48,8 @@ export function apply(ctx, config = {}) {
   const store = new native.MemoryStore(dbPathOf(config), budgets.user, budgets.agent)
   const snapshots = new WeakMap()
 
-  ctx.tools.register(makeMemoryTool(store))
-  ctx.tools.register(makeSaveTool(native.RepoWriter))
+  ctx.tools.register(makeMemoryTool(store, native))
+  ctx.tools.register(makeSaveTool(native.RepoWriter, native))
 
   ctx.systemPrompt.section({
     name: 'dsh-optimisemd:memory',
