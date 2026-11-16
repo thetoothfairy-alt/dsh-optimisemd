@@ -189,8 +189,14 @@ impl Repo {
             saved.push((day_path.clone(), dst));
         }
         let written = self.save(text, date, pointer, section, part, slug, detail)?;
+        let mut touched: Vec<String> = vec!["MEMORY.md".into()];
+        if let Some(p) = part {
+            touched.push(format!("docs/memory-details/{p}"));
+        }
+        touched.push(format!("memory/{date}.md"));
         let script = self.root.join("scripts/check-memory-index.sh");
         if !script.exists() {
+            let _ = crate::audit::record(&self.root, "save", "applied", &touched);
             return Ok(written);
         }
         let gate = std::process::Command::new("bash")
@@ -198,6 +204,7 @@ impl Repo {
             .current_dir(&self.root)
             .output();
         if gate.as_ref().map(|o| o.status.success()).unwrap_or(false) {
+            let _ = crate::audit::record(&self.root, "save", "applied", &touched);
             return Ok(written);
         }
         // restore every tracked file, and remove the files this save created that had no prior copy
@@ -236,6 +243,7 @@ impl Repo {
         } else {
             format!("the index check failed; the save was rolled back — {findings}")
         };
+        let _ = crate::audit::record(&self.root, "save", "rolled-back", &touched);
         Err(RepoError::Invalid(msg))
     }
 
@@ -454,6 +462,29 @@ mod tests {
         assert_eq!(fs::read_to_string(dir.join("MEMORY.md")).unwrap(), before);
         assert!(!dir.join("docs/memory-details/02.md").exists());
         assert!(!dir.join("memory/2026-11-13.md").exists());
+        let log = fs::read_to_string(dir.join("memory/logs/repo-writes.log")).unwrap();
+        assert!(log.contains("save rolled-back"), "{log}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_successful_save_is_audited() {
+        let dir = workspace("audit");
+        let repo = Repo::new(&dir);
+        repo.save_checked(
+            "An audited fact.",
+            "2026-11-13",
+            "docs/memory-details/01.md",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let log = fs::read_to_string(dir.join("memory/logs/repo-writes.log")).unwrap();
+        assert!(log.contains("save applied"), "{log}");
+        assert!(log.contains("MEMORY.md"), "{log}");
+        assert!(log.contains("memory/2026-11-13.md"), "{log}");
         let _ = fs::remove_dir_all(&dir);
     }
 

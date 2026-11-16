@@ -4,6 +4,7 @@
 //! Node surface; every rule (caps, unique-match, audit) lives here so the harness and the CLI
 //! cannot disagree about what the store means.
 
+pub mod audit;
 pub mod promo;
 pub mod repo;
 pub mod snapshot;

@@ -63,6 +63,10 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
     ));
     fs::write(&details, &details_after)?;
 
+    let touched = vec![
+        format!("docs/hard-won/{}", a.part),
+        "docs/hard-won-details.md".to_string(),
+    ];
     let check = Command::new("bash")
         .arg(root.join("scripts/check-context-files.sh"))
         .current_dir(root)
@@ -77,8 +81,10 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
         for l in out.lines().filter(|l| l.contains("FAIL")).take(5) {
             eprintln!("{l}");
         }
+        let _ = optimisemd_core::audit::record(root, "landmine", "rolled-back", &touched);
         return Err("the context guard failed; both files were restored".into());
     }
+    let _ = optimisemd_core::audit::record(root, "landmine", "applied", &touched);
     println!("recorded §{} in docs/hard-won/{}", a.slug.trim(), a.part);
     Ok(0)
 }

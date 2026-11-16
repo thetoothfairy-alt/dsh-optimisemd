@@ -312,6 +312,13 @@ fn promote(root: &Path, a: PromoteArgs) -> Result<i32, Box<dyn std::error::Error
             report.backup.as_deref().unwrap_or("(none)")
         );
     }
+    let touched = vec![
+        "MEMORY.md".to_string(),
+        report
+            .backup
+            .clone()
+            .unwrap_or_else(|| "(no backup)".to_string()),
+    ];
     let check = run_check(root)?;
     if check != 0 {
         eprintln!("dsh-optimisemd: the index check failed — restoring the backup");
@@ -331,8 +338,10 @@ fn promote(root: &Path, a: PromoteArgs) -> Result<i32, Box<dyn std::error::Error
                 }
             }
         }
+        let _ = optimisemd_core::audit::record(root, "promote-apply", "rolled-back", &touched);
         return Ok(1);
     }
+    let _ = optimisemd_core::audit::record(root, "promote-apply", "applied", &touched);
     Ok(0)
 }
 
