@@ -114,9 +114,7 @@ and the release record says which commit it finally named.
 
 - CI (`release.yml`) runs format, clippy, the Rust tests and the host tests on Ubuntu **and**
   Windows, then builds the linux-x64 and win32-x64 install files from the tag.
-- The macOS install file is built on a Mac from the tag (`scripts/build-macos-air.sh <tag>`) and
-  uploaded to the same release by hand — there is no macOS runner on the plan, so that artifact is
-  the one part without CI provenance. This is unchanged since 0.4.5.
+- The third install file (macOS) has no CI runner on this plan; it is produced outside CI.
 - Publish is blocked by a red test run and by a tag/version mismatch (`package.json` and
   `Cargo.toml` must equal the tag's version).
 
