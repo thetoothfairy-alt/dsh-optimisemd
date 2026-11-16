@@ -80,13 +80,15 @@ fn take(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
-/// The workspace's session folder name: the absolute path with slashes turned into dashes.
+/// The workspace's session folder name: the absolute path with separators turned into dashes.
+/// Windows roots carry `:` and `\` — both illegal in a folder name — so they collapse too, which
+/// keeps the key a valid single directory name on every platform (v0.4.8).
 pub fn ws_key(root: &Path) -> String {
     format!(
         "--{}--",
         root.to_string_lossy()
-            .trim_start_matches('/')
-            .replace('/', "-")
+            .trim_start_matches(['/', '\\'])
+            .replace(['/', '\\', ':'], "-")
     )
 }
 

@@ -646,6 +646,9 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    // Executing a shell shim is the subject here — a unix contract (the Windows test host has no
+    // workspace shell; the refusal path is covered by a_failing_check_rolls_the_save_back).
+    #[cfg(unix)]
     #[test]
     fn the_save_gate_runs_a_shim_directly() {
         let dir = workspace("gate-shim");

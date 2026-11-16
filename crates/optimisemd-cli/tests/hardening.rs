@@ -28,11 +28,12 @@ fn temp(label: &str) -> PathBuf {
 }
 
 fn ws_key(root: &Path) -> String {
+    // Same normalisation as the binary: Windows roots carry : and \, which are illegal in a folder name.
     format!(
         "--{}--",
         root.to_string_lossy()
-            .trim_start_matches('/')
-            .replace('/', "-")
+            .trim_start_matches(['/', '\\'])
+            .replace(['/', '\\', ':'], "-")
     )
 }
 
