@@ -10,6 +10,13 @@ use std::path::Path;
 
 /// Write a file the crash-safe way: a temp file beside the target, flushed to disk, then renamed
 /// over it. A crash or a full disk leaves either the old file or the new one — never a truncated one.
+/// Set by a test to make the next atomic write in that thread fail after its temp file exists.
+/// Thread-local on purpose: tests run in parallel, and a global flag gets consumed by a neighbour.
+#[cfg(test)]
+thread_local! {
+    static FAIL_AFTER_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 pub fn write_atomic(path: &Path, body: &str) -> std::io::Result<()> {
     let dir = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
@@ -26,6 +33,12 @@ pub fn write_atomic(path: &Path, body: &str) -> std::io::Result<()> {
     let written = (|| -> std::io::Result<()> {
         let mut f = fs::File::create(&tmp)?;
         f.write_all(body.as_bytes())?;
+        // A test hook, not behaviour: an unwritable disk and a failing sync look the same to the
+        // cleanup path, and no test can make a real disk fail on demand.
+        #[cfg(test)]
+        if FAIL_AFTER_WRITE.with(|f| f.replace(false)) {
+            return Err(std::io::Error::other("injected write failure"));
+        }
         f.sync_all()?;
         Ok(())
     })();
@@ -349,6 +362,31 @@ mod tests {
 
     // The temp must not survive ANY failure after it exists, not just a failed rename: a target
     // that is a directory fails the rename with the temp already written.
+    // The failure that matters most: the temp file exists and then the write fails, so only the
+    // cleanup branch can take it away. A failed rename is covered separately and was already safe
+    // before v0.4.10, which is why this one injects the failure after the bytes are written.
+    #[test]
+    fn a_write_that_fails_after_the_temp_exists_leaves_no_temp_file() {
+        let dir = temp("write-fails-midway");
+        let path = dir.join("MEMORY.md");
+        std::fs::write(&path, "the old content\n").unwrap();
+        FAIL_AFTER_WRITE.with(|f| f.set(true));
+        let err = write_atomic(&path, "the new content\n").unwrap_err();
+        assert!(err.to_string().contains("injected"), "{err}");
+        let strays: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains(".tmp-"))
+            .collect();
+        assert!(strays.is_empty(), "a temp file was left behind: {strays:?}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "the old content\n",
+            "the previous file must be intact"
+        );
+    }
+
     #[test]
     fn a_write_onto_a_directory_leaves_no_temp_file() {
         let dir = temp("write-onto-dir");
