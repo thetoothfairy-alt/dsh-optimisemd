@@ -192,6 +192,87 @@ fn session_index_skips_a_malformed_transcript_beside_a_good_one() {
 }
 
 #[test]
+fn session_index_skips_a_json_transcript_with_no_session_event() {
+    let root = temp("index-junk");
+    fs::create_dir_all(root.join("docs")).unwrap();
+    let home = temp("index-junk-home");
+    let ws = ws_key(&root);
+    transcript(
+        &home.join("sessions").join(&ws).join("session-junk"),
+        "{\"type\":\"garbage\"}\n",
+    );
+    transcript(
+        &home.join("sessions").join(&ws).join("session-good"),
+        "{\"createdAt\":1794796632985,\"type\":\"request/header\"}\n\
+         {\"type\":\"session/title\",\"data\":{\"title\":\"The good title\"}}\n",
+    );
+    let out = run(&root, &home, &["session-index"]);
+    assert!(out.status.success());
+    let report = fs::read_to_string(root.join("docs/session-index.md")).unwrap();
+    assert!(report.contains("**1 sessions**"), "{report}");
+    assert!(!report.contains("(untitled)"), "{report}");
+}
+
+#[test]
+fn log_index_refuses_a_missing_memory_directory() {
+    let root = temp("log-missing");
+    fs::create_dir_all(root.join("docs")).unwrap();
+    let home = temp("log-missing-home");
+    let out = run(&root, &home, &["log-index"]);
+    assert!(!out.status.success());
+    assert!(!root.join("docs/memory-log-index.md").exists());
+}
+
+#[test]
+fn session_commits_refuses_when_git_cannot_read_the_repository() {
+    let root = temp("commits-norepo");
+    fs::create_dir_all(root.join("docs")).unwrap();
+    fs::write(
+        root.join("docs/session-index.md"),
+        "| # | Started | Session | Parent | Title | Size | Lines |\n\
+         |---|---|---|---|---|---|---|\n\
+         | 1 | 2026-11-16 10:00 | `abcdef12` |  | A title | 1 KB | 1 |\n",
+    )
+    .unwrap();
+    let home = temp("commits-norepo-home");
+    let out = run(&root, &home, &["session-commits"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("git log failed"));
+    assert!(!root.join("docs/session-commits.md").exists());
+}
+
+#[test]
+fn session_commits_counts_unjoined_commits_when_there_are_no_trailers() {
+    let root = temp("commits-unjoined");
+    fs::create_dir_all(root.join("docs")).unwrap();
+    fs::write(
+        root.join("docs/session-index.md"),
+        "| # | Started | Session | Parent | Title | Size | Lines |\n\
+         |---|---|---|---|---|---|---|\n\
+         | 1 | 2026-11-16 10:00 | `abcdef12` |  | A title | 1 KB | 1 |\n",
+    )
+    .unwrap();
+    git(&root, &["init", "-q"]);
+    fs::write(root.join("a.txt"), "a").unwrap();
+    git(&root, &["add", "a.txt"]);
+    git(&root, &["commit", "-q", "-m", "work without a session"]);
+    let home = temp("commits-unjoined-home");
+    let out = run(&root, &home, &["session-commits", "--days", "30"]);
+    assert!(out.status.success());
+    let report = fs::read_to_string(root.join("docs/session-commits.md")).unwrap();
+    assert!(report.contains("1 unjoined"), "{report}");
+    assert!(report.contains("0 sessions joined"), "{report}");
+}
+
+#[test]
+fn tier0_history_without_a_store_exits_two() {
+    let root = temp("tier0-nostore");
+    let home = temp("tier0-nostore-home");
+    let out = run(&root, &home, &["tier0", "history"]);
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
 fn session_index_check_never_writes_and_fails_on_an_empty_index() {
     let root = temp("index-check");
     fs::create_dir_all(root.join("docs")).unwrap();

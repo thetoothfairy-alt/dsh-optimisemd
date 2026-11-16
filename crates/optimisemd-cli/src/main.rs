@@ -283,6 +283,11 @@ fn promote(root: &Path, a: PromoteArgs) -> Result<i32, Box<dyn std::error::Error
                     body.push_str(&format!("- `{}` §{}\n", p.part, p.slug));
                 }
             }
+            body.push_str(&format!(
+                "\n**{} demote candidates · {} promote candidates**\n",
+                report.demote.len(),
+                report.promote.len()
+            ));
             std::fs::write(&path, body)?;
             println!("candidates written to memory/logs/promotion-candidates.md");
             println!(
