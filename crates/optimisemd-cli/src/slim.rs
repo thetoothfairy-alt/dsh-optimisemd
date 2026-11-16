@@ -47,7 +47,7 @@ fn git_show_size(root: &Path, rev: &str, path: &str) -> Option<u64> {
         .output()
         .ok()?;
     if out.status.success() {
-        Some(out.stdout.len() as u64)
+        Some(String::from_utf8_lossy(&out.stdout).chars().count() as u64)
     } else {
         None
     }
@@ -79,6 +79,10 @@ fn read_budgets(guard: &str) -> Result<Vec<Budget>, Box<dyn Error>> {
         }
     }
     Ok(out)
+}
+
+fn char_count(path: &Path) -> Result<u64, Box<dyn Error>> {
+    Ok(fs::read_to_string(path)?.chars().count() as u64)
 }
 
 fn line_count(path: &Path) -> Result<u64, Box<dyn Error>> {
@@ -133,7 +137,7 @@ pub fn run(root: &Path, args: SlimArgs) -> Result<i32, Box<dyn Error>> {
         if !path.exists() {
             continue;
         }
-        let now = fs::metadata(&path)?.len();
+        let now = char_count(&path)?;
         let old = git_show_size(root, &baseline, &f);
         let lines = line_count(&path)?;
         let budget = budgets.get(&f).copied();
@@ -243,9 +247,31 @@ pub fn run(root: &Path, args: SlimArgs) -> Result<i32, Box<dyn Error>> {
     fs::create_dir_all(root.join("docs"))?;
     fs::write(root.join("docs/md-slimming-report.md"), out)?;
     println!("{line}");
+    println!(
+        "cut in place {} chars · moved into parts {} · grown {} chars",
+        fmt(inplace),
+        fmt(split),
+        fmt(growth)
+    );
     if !over.is_empty() {
         println!("over budget: {}", over.join(", "));
         return Ok(1);
     }
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn a_file_is_measured_in_characters_not_bytes() {
+        let dir = std::env::temp_dir().join(format!("optimisemd-slim-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("t.md");
+        fs::write(&p, "a—b\n").unwrap();
+        assert_eq!(char_count(&p).unwrap(), 4);
+    }
 }

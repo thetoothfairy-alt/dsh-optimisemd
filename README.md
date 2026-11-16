@@ -22,7 +22,7 @@ The same crate ships `dsh-optimisemd`, the binary the workspace's nightlies call
 ```
 dsh-optimisemd promote            # demote + promote candidates (report)
 dsh-optimisemd promote --apply    # move quiet rows into their part, with the check as the gate
-dsh-optimisemd tier0 list|add|replace|remove|query|verify
+dsh-optimisemd tier0 list|add|replace|remove|query|verify|history
 dsh-optimisemd check              # the workspace's index check
 dsh-optimisemd export             # memory/logs/memento-export.md from a read-only store copy
 dsh-optimisemd index              # refresh the ranked finder

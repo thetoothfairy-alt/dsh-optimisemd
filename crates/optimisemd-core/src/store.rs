@@ -19,6 +19,21 @@ impl Default for Budgets {
     }
 }
 
+/// One row of the store's audit table: what was asked, when, and by which session.
+#[derive(Debug, Clone)]
+pub struct HistoryRow {
+    pub seq: i64,
+    pub ts: i64,
+    pub action: String,
+    pub track: String,
+    pub scope: String,
+    pub entry_id: String,
+    pub text: String,
+    pub outcome: String,
+    pub source: String,
+    pub session_id: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Entry {
     pub id: String,
@@ -130,6 +145,33 @@ impl Store {
             |r| r.get(0),
         )?;
         Ok(used as usize)
+    }
+
+    /// The audit table, newest first: every add, replace, remove, query, merge and import the store recorded.
+    pub fn history(&self, limit: usize) -> Result<Vec<HistoryRow>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "select seq,ts,action,track,scope,entry_id,text,outcome,source,session_id from audit \
+             order by seq desc limit ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![limit.max(1) as i64], |r| {
+            Ok(HistoryRow {
+                seq: r.get(0)?,
+                ts: r.get(1)?,
+                action: r.get(2)?,
+                track: r.get(3)?,
+                scope: r.get(4)?,
+                entry_id: r.get(5)?,
+                text: r.get(6)?,
+                outcome: r.get(7)?,
+                source: r.get(8)?,
+                session_id: r.get(9)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 
     pub fn cap(&self, track: &str) -> usize {
@@ -557,5 +599,37 @@ mod tests {
             .collect();
         assert!(texts.contains(&"A fact.".to_string()));
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn history_lists_every_operation_newest_first() {
+        let dir = std::env::temp_dir().join(format!("optimisemd-history-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let store = Store::open(&dir.join("m.db"), Budgets::default()).unwrap();
+        let tags: Vec<String> = Vec::new();
+        store
+            .add(
+                "user",
+                "user-global",
+                "first fact",
+                &tags,
+                "test",
+                "/ws",
+                "",
+                "s1",
+            )
+            .unwrap();
+        store.replace("first", "second fact", "s1").unwrap();
+        store.remove("second", "s1").unwrap();
+        store.query("second", 5, "s1").unwrap();
+        let rows = store.history(10).unwrap();
+        let actions: Vec<&str> = rows.iter().map(|r| r.action.as_str()).collect();
+        assert_eq!(actions, ["recalled", "remove", "replace", "add"]);
     }
 }

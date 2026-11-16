@@ -17,7 +17,7 @@ pub fn local_now() -> String {
         .unwrap_or_default()
 }
 
-fn local_datetime(epoch: i64) -> String {
+pub(crate) fn local_datetime(epoch: i64) -> String {
     Command::new("date")
         .args(["-d", &format!("@{epoch}"), "+%Y-%m-%d %H:%M"])
         .output()
@@ -37,6 +37,73 @@ fn take(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
+/// The workspace's session folder name: the absolute path with slashes turned into dashes.
+pub fn ws_key(root: &Path) -> String {
+    format!(
+        "--{}--",
+        root.to_string_lossy()
+            .trim_start_matches('/')
+            .replace('/', "-")
+    )
+}
+
+/// The root as the tool must see it: absolute. A relative root (".") turns the workspace's session folder into
+/// "--.--", which is how the session index silently went empty from 0.4.0 to 0.4.4 (fixed 2026-11-16).
+pub fn canonical_root(root: &Path) -> std::path::PathBuf {
+    root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
+}
+
+/// Every transcript for this workspace, live first then archived, each list sorted by path.
+pub fn transcript_files(home: &str, ws: &str) -> Vec<(String, std::path::PathBuf)> {
+    let mut out = Vec::new();
+    for (kind, base) in [
+        ("live", format!("{home}/sessions/{ws}")),
+        ("archived", format!("{home}/sessions-archive/{ws}")),
+    ] {
+        let Ok(entries) = fs::read_dir(&base) else {
+            continue;
+        };
+        let mut logs: Vec<std::path::PathBuf> = entries
+            .flatten()
+            .map(|e| e.path().join("session.v4.jsonl.zstd"))
+            .filter(|p| p.exists())
+            .collect();
+        logs.sort();
+        out.extend(logs.into_iter().map(|p| (kind.to_string(), p)));
+    }
+    out
+}
+
+/// Clip at n characters, with an ellipsis only when something was cut.
+fn clip(s: &str, n: usize) -> String {
+    if s.chars().count() > n {
+        format!("{}…", take(s, n))
+    } else {
+        s.to_string()
+    }
+}
+
+/// A question, cut before the harness's runtime reminders and background-job notices.
+fn clean_ask(txt: &str) -> String {
+    let mut cut = txt;
+    for marker in [
+        "<system-reminder>",
+        "Current runtime context",
+        "Time sampled while preparing",
+        "Browser time zone for this request",
+        "\n\nbackground job ",
+    ] {
+        if let Some(i) = cut.find(marker) {
+            cut = &cut[..i];
+        }
+    }
+    cut.trim().to_string()
+}
+
+fn is_machine(subject: &str) -> bool {
+    subject.starts_with("Auto backup") || subject.starts_with("nightly:")
+}
+
 /* ---------------------------------------------------------------- session index */
 
 struct Row {
@@ -48,6 +115,17 @@ struct Row {
     kind: String,
     size: u64,
     lines: usize,
+}
+
+/// The last title event wins: the harness writes a fallback title first, then the provider's title.
+fn last_title(text: &str) -> String {
+    let re = Regex::new(r#""type":"session/title[^"]*"[^\n]*?"title":"((?:[^"\\]|\\.)*)""#)
+        .expect("constant regex");
+    let mut title = String::new();
+    for c in re.captures_iter(text) {
+        title = unescape(&c[1]);
+    }
+    title
 }
 
 fn unescape(s: &str) -> String {
@@ -81,83 +159,74 @@ fn unescape(s: &str) -> String {
 
 pub fn session_index(root: &Path, check: bool) -> Result<i32, Box<dyn std::error::Error>> {
     let home = dsh_home();
-    let ws = format!(
-        "--{}--",
-        root.to_string_lossy()
-            .trim_start_matches('/')
-            .replace('/', "-")
-    );
+    let ws = ws_key(root);
     let out = root.join("docs/session-index.md");
     let created_re = Regex::new(r#""createdAt":(\d{13})"#)?;
-    let title_re = Regex::new(r#""type":"session/title"[^\n]*?"title":"((?:[^"\\]|\\.)*)""#)?;
     let text_re = Regex::new(r#""type":"text","text":"((?:[^"\\]|\\.){0,160})"#)?;
     let parent_re = Regex::new(r#""parentSession":"session-([0-9a-f-]+)""#)?;
     let mut rows: Vec<Row> = Vec::new();
-    for (kind, base) in [
-        ("live", format!("{home}/sessions/{ws}")),
-        ("archived", format!("{home}/sessions-archive/{ws}")),
-    ] {
-        let entries = match fs::read_dir(&base) {
-            Ok(e) => e,
+    let files = transcript_files(&home, &ws);
+    for (kind, log) in &files {
+        let bytes = match Command::new("zstd")
+            .args(["-dc", &log.to_string_lossy()])
+            .output()
+        {
+            Ok(o) => o.stdout,
             Err(_) => continue,
         };
-        let mut dirs: Vec<String> = entries
-            .flatten()
-            .filter(|e| e.path().is_dir())
-            .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
-            .collect();
-        dirs.sort();
-        for d in dirs {
-            let log = format!("{base}/{d}/session.v4.jsonl.zstd");
-            if !Path::new(&log).exists() {
-                continue;
-            }
-            let bytes = match Command::new("zstd").args(["-dc", &log]).output() {
-                Ok(o) => o.stdout,
-                Err(_) => continue,
+        let head = &bytes[..bytes.len().min(200_000)];
+        let text = String::from_utf8_lossy(head).into_owned();
+        let sid = log
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| {
+                n.to_string_lossy()
+                    .trim_start_matches("session-")
+                    .to_string()
+            })
+            .unwrap_or_default();
+        let created_ms: Option<i64> = created_re
+            .captures(&text)
+            .and_then(|c| c[1].parse::<i64>().ok());
+        let created: Option<i64> = created_ms.map(|ms| ms / 1000);
+        let mut title = last_title(&text);
+        if title.is_empty() {
+            title = match text_re.captures(&text) {
+                Some(c) => clip(&c[1], 120),
+                None => "(untitled)".into(),
             };
-            let head = &bytes[..bytes.len().min(200_000)];
-            let text = String::from_utf8_lossy(head).into_owned();
-            let sid = d.trim_start_matches("session-").to_string();
-            let created_ms: Option<i64> = created_re
-                .captures(&text)
-                .and_then(|c| c[1].parse::<i64>().ok());
-            let created: Option<i64> = created_ms.map(|ms| ms / 1000);
-            let mut title = match title_re.captures(&text) {
-                Some(c) => unescape(&c[1]),
-                None => String::new(),
-            };
-            if title.is_empty() {
-                title = match text_re.captures(&text) {
-                    Some(c) => format!("{}…", take(&c[1], 120)),
-                    None => "(untitled)".into(),
-                };
-            }
-            let parent = parent_re
-                .captures(&text)
-                .map(|c| take(&c[1], 8))
-                .unwrap_or_default();
-            let epoch = match created {
-                Some(s) => s,
-                None => fs::metadata(&log)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0),
-            };
-            let size = fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
-            rows.push(Row {
-                sort_key: created_ms.unwrap_or(epoch * 1000),
-                date: local_datetime(epoch),
-                sid,
-                parent,
-                title: title.replace('\n', " "),
-                kind: kind.into(),
-                size,
-                lines: bytes.iter().filter(|b| **b == b'\n').count(),
-            });
         }
+        let parent = parent_re
+            .captures(&text)
+            .map(|c| take(&c[1], 8))
+            .unwrap_or_default();
+        let epoch = match created {
+            Some(s) => s,
+            None => fs::metadata(log)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0),
+        };
+        let size = fs::metadata(log).map(|m| m.len()).unwrap_or(0);
+        rows.push(Row {
+            sort_key: created_ms.unwrap_or(epoch * 1000),
+            date: local_datetime(epoch),
+            sid,
+            parent,
+            title: title.replace('\n', " "),
+            kind: kind.clone(),
+            size,
+            lines: bytes.iter().filter(|b| **b == b'\n').count(),
+        });
+    }
+    if !check && rows.is_empty() {
+        eprintln!(
+            "session-index: no sessions found for this workspace under {home}/sessions/{ws} ({} transcript(s)); refusing to write an empty index",
+            files.len()
+        );
+        return Ok(1);
     }
     rows.sort_by(|a, b| {
         b.sort_key
@@ -194,7 +263,7 @@ pub fn session_index(root: &Path, check: bool) -> Result<i32, Box<dyn std::error
     ];
     for (i, r) in rows.iter().enumerate() {
         let mark = if r.kind == "live" { "" } else { " (archived)" };
-        let title = take(&r.title, 110).replace('|', "\\|");
+        let title = clip(&r.title, 110).replace('|', "\\|");
         lines.push(format!(
             "| {} | {} | `{}`{} | {} | {} | {} KB | {} |",
             i + 1,
@@ -244,6 +313,7 @@ pub fn session_commits(root: &Path, days: &str) -> Result<i32, Box<dyn std::erro
         .args([
             "log",
             &format!("--since={days} days ago"),
+            "--date=format:%Y-%m-%d %H:%M",
             &format!("--format={fmt}"),
         ])
         .current_dir(root)
@@ -252,6 +322,7 @@ pub fn session_commits(root: &Path, days: &str) -> Result<i32, Box<dyn std::erro
     let mut order: Vec<String> = Vec::new();
     let mut joined: HashMap<String, Vec<Commit>> = HashMap::new();
     let mut unjoined: Vec<Commit> = Vec::new();
+    let mut machine: Vec<Commit> = Vec::new();
     let mut total = 0usize;
     for rec in raw.split('\u{1e}') {
         let rec = rec.trim_matches('\n');
@@ -273,7 +344,11 @@ pub fn session_commits(root: &Path, days: &str) -> Result<i32, Box<dyn std::erro
             .trim()
             .to_string();
         if sid.is_empty() {
-            unjoined.push(c);
+            if is_machine(&c.subject) {
+                machine.push(c);
+            } else {
+                unjoined.push(c);
+            }
         } else {
             if !joined.contains_key(&sid) {
                 order.push(sid.clone());
@@ -314,7 +389,7 @@ pub fn session_commits(root: &Path, days: &str) -> Result<i32, Box<dyn std::erro
         lines.push(format!(
             "| `{}` | {} | {} | {} | {} |",
             short,
-            take(titles.get(&short).map(|s| s.as_str()).unwrap_or(""), 60),
+            clip(titles.get(&short).map(|s| s.as_str()).unwrap_or(""), 60),
             rows.len(),
             take(dates[0], 16),
             take(dates[dates.len() - 1], 16)
@@ -339,11 +414,17 @@ pub fn session_commits(root: &Path, days: &str) -> Result<i32, Box<dyn std::erro
     }
     lines.push(String::new());
     lines.push(format!(
-        "**{} commits in {} days · {} sessions joined · {} unjoined.**",
+        "Machine commits with no session (auto backups, nightly runs): {}. They are not counted as unjoined.",
+        machine.len()
+    ));
+    lines.push(String::new());
+    lines.push(format!(
+        "**{} commits in {} days · {} sessions joined · {} unjoined · {} machine.**",
         total,
         days,
         joined.len(),
-        unjoined.len()
+        unjoined.len(),
+        machine.len()
     ));
     fs::write(
         root.join("docs/session-commits.md"),
@@ -443,23 +524,11 @@ pub fn memory_log_index(root: &Path) -> Result<i32, Box<dyn std::error::Error>> 
 
 pub fn session_digest(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
     let home = dsh_home();
-    let mut transcripts: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(outer) = fs::read_dir(format!("{home}/sessions")) {
-        for w in outer.flatten() {
-            if !w.path().is_dir() {
-                continue;
-            }
-            if let Ok(inner) = fs::read_dir(w.path()) {
-                for s in inner.flatten() {
-                    let name = s.file_name().to_string_lossy().to_string();
-                    let log = s.path().join("session.v4.jsonl.zstd");
-                    if name.starts_with("session-") && log.exists() {
-                        transcripts.push(log);
-                    }
-                }
-            }
-        }
-    }
+    let ws = ws_key(root);
+    let mut transcripts: Vec<std::path::PathBuf> = transcript_files(&home, &ws)
+        .into_iter()
+        .map(|(_, p)| p)
+        .collect();
     transcripts.sort();
     let mut rows: Vec<(i64, String)> = Vec::new();
     for f in &transcripts {
@@ -520,14 +589,12 @@ pub fn session_digest(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
                             continue;
                         }
                         let txt = b.get("text").and_then(|x| x.as_str()).unwrap_or("");
-                        if txt.contains("<system-reminder>")
-                            || txt.contains("Current runtime context")
-                            || take(txt, 60).contains("memento")
-                        {
+                        if take(txt, 60).contains("memento") {
                             continue;
                         }
-                        let norm = txt.split_whitespace().collect::<Vec<_>>().join(" ");
-                        if norm.chars().count() > 15 {
+                        let cleaned = clean_ask(txt);
+                        let norm = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+                        if norm.chars().count() > 15 && !norm.starts_with("background job ") {
                             asks.push(take(&norm, 160));
                         }
                     }
@@ -570,7 +637,7 @@ pub fn session_digest(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
     rows.sort_by_key(|r| std::cmp::Reverse(r.0));
     fs::create_dir_all(root.join("memory/logs"))?;
     let mut body = String::from("# What past sessions were asked — one row per session\n\n");
-    body.push_str("Generated by `bin/dsh-optimisemd session-digest`; the transcripts themselves are `~/.dsh/sessions/`. Indexed by `tools/belfind` so a question about past work can find the session that did it.\n\n");
+    body.push_str("Generated by `bin/dsh-optimisemd session-digest`; the transcripts are this workspace's live and archived sessions (`~/.dsh/sessions/`, `sessions-archive/`). Indexed by `tools/belfind` so a question about past work can find the session that did it.\n\n");
     for (_, r) in &rows {
         body.push_str(r);
         body.push('\n');
@@ -590,4 +657,82 @@ fn local_datetime_short(epoch: i64) -> String {
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn ws_key_is_the_workspace_folder_name() {
+        assert_eq!(
+            ws_key(Path::new("/home/admin/.openclaw/workspace")),
+            "--home-admin-.openclaw-workspace--"
+        );
+    }
+
+    #[test]
+    fn canonical_root_makes_a_relative_root_absolute() {
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(canonical_root(Path::new(".")), cwd);
+    }
+
+    #[test]
+    fn transcript_files_read_live_and_archive_for_this_workspace_only() {
+        let home = std::env::temp_dir().join(format!("optimisemd-reports-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        for dir in [
+            "sessions/--ws--/session-a",
+            "sessions-archive/--ws--/session-b",
+            "sessions/--other--/session-c",
+        ] {
+            fs::create_dir_all(home.join(dir)).unwrap();
+            fs::write(home.join(dir).join("session.v4.jsonl.zstd"), b"").unwrap();
+        }
+        let got = transcript_files(&home.to_string_lossy(), "--ws--");
+        let names: Vec<String> = got
+            .iter()
+            .map(|(_, p)| {
+                p.parent()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(names, vec!["session-a", "session-b"]);
+        assert_eq!(got[0].0, "live");
+        assert_eq!(got[1].0, "archived");
+    }
+
+    #[test]
+    fn the_last_title_event_wins() {
+        let text = "{\"type\":\"session/title\",\"data\":{\"title\":\"fallback cut\"}}\n\
+                    {\"type\":\"session/title\",\"data\":{\"title\":\"The provider title\"}}\n";
+        assert_eq!(last_title(text), "The provider title");
+    }
+
+    #[test]
+    fn clip_adds_an_ellipsis_only_when_it_cuts() {
+        assert_eq!(clip("abcdef", 3), "abc…");
+        assert_eq!(clip("abc", 3), "abc");
+    }
+
+    #[test]
+    fn the_ask_is_cut_before_harness_reminders() {
+        assert_eq!(
+            clean_ask("do the thing\n\nTime sampled while preparing turn 1: x"),
+            "do the thing"
+        );
+        assert_eq!(clean_ask("do the thing"), "do the thing");
+    }
+
+    #[test]
+    fn machine_commits_are_not_counted_as_unjoined_sessions() {
+        assert!(is_machine("Auto backup 2026-11-11 03:00"));
+        assert!(is_machine("nightly: refresh the measured counts"));
+        assert!(!is_machine("Fix the portal"));
+    }
 }
