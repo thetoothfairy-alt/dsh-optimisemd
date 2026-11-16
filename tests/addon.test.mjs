@@ -1,5 +1,5 @@
 // The addon is the whole mechanism: caps, unique-match, audit, snapshot visibility.
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -36,15 +36,13 @@ test('the Rust addon supplies the tool defaults', () => {
     assert.equal(hit.track, 'agent')
     assert.equal(hit.scope, 'workspace')
 
+    // No scripts/ gate here: the subject is the addon's defaults, and a gate needs a workspace shell
+    // (the Windows runner's `bash` is the WSL stub with no distro installed).
     mkdirSync(join(dir, 'docs/memory-details'), { recursive: true })
-    mkdirSync(join(dir, 'scripts'), { recursive: true })
     writeFileSync(
       join(dir, 'MEMORY.md'),
       '# MEMORY.md\n\n## Subject facts\n- **An existing row.** (2026-01-01) — `docs/memory-details/01.md`\n',
     )
-    writeFileSync(join(dir, 'scripts/check-memory-index.sh'), '#!/usr/bin/env bash\nexit 0\n')
-    chmodSync(join(dir, 'scripts/check-memory-index.sh'), 0o755)
-    chmodSync(join(dir, 'scripts/check-memory-index.sh'), 0o755)
     const written = new RepoWriter(dir).saveChecked(
       'A saved fact.',
       '',

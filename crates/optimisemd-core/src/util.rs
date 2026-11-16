@@ -70,12 +70,14 @@ pub fn run_script(script: &Path, direct_cwd: &Path) -> std::io::Result<std::proc
         .file_name()
         .map(std::ffi::OsString::from)
         .unwrap_or_default();
+    // Git bash FIRST on Windows: the `bash` a Windows host resolves may be WSL's stub, which
+    // fails with "no installed distributions" when there is no distro.
     const SHELLS: [&str; 5] = [
-        "bash",
-        "sh",
         r"C:\Program Files\Git\bin\bash.exe",
         r"C:\Program Files\Git\usr\bin\bash.exe",
         r"C:\Program Files (x86)\Git\bin\bash.exe",
+        "bash",
+        "sh",
     ];
     let mut last: Option<std::io::Error> = None;
     for shell in SHELLS {
