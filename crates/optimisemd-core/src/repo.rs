@@ -516,6 +516,13 @@ mod tests {
         let shim = scripts.join("check-memory-index.sh");
         std::fs::write(
             &shim,
+            "#!/usr/bin/env bash\nroot=\"$(cd \"$(dirname \"$0\")/..\" && pwd)\"\nexec \"$root/bin/dsh-optimisemd\" --root \"$root\" check \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        let bin = dir.join("bin/dsh-optimisemd");
+        std::fs::write(
+            &bin,
             "#!/usr/bin/env bash\necho 'indexes 1 · fact rows 1 · detail rows 0 · findings 0'\nexit 0\n",
         )
         .unwrap();
@@ -523,6 +530,7 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let repo = Repo::new(&dir);
         repo.save_checked(

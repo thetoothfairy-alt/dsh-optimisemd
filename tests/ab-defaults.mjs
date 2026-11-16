@@ -1,7 +1,7 @@
 // A/B the plugin tools' defaults: the installed 0.4.6 package decides track/scope and the save date in JS; this repo
 // decides them in Rust. Both run the same handlers on identical reset fixtures, and the results, store and files are
 // compared. Run: node tests/ab-defaults.mjs   (AB_A overrides the installed package path.)
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -29,15 +29,20 @@ const normalize = (value, base) => {
   return walk(parsed)
 }
 
+const WORKSPACE = '/home/admin/.openclaw/workspace'
 const fixture = (root) => {
   mkdirSync(join(root, 'docs/memory-details'), { recursive: true })
   mkdirSync(join(root, 'scripts'), { recursive: true })
+  mkdirSync(join(root, 'bin'), { recursive: true })
   writeFileSync(
     join(root, 'MEMORY.md'),
     '# MEMORY.md\n\n## Subject facts\n- **An existing row.** (2026-01-01) — `docs/memory-details/01.md`\n',
   )
-  writeFileSync(join(root, 'scripts/check-memory-index.sh'), '#!/usr/bin/env bash\nexit 0\n')
-  chmodSync(join(root, 'scripts/check-memory-index.sh'), 0o755)
+  writeFileSync(join(root, 'docs/memory-details/01.md'), '# Part 01\n\n### §the-row\n\nAn existing row.\n')
+  // The delivered shape: the real one-line shim and the binary it execs.
+  copyFileSync(join(WORKSPACE, 'scripts/check-memory-index.sh'), join(root, 'scripts/check-memory-index.sh'))
+  copyFileSync(join(WORKSPACE, 'bin/dsh-optimisemd'), join(root, 'bin/dsh-optimisemd'))
+  chmodSync(join(root, 'bin/dsh-optimisemd'), 0o755)
 }
 
 const runSide = async (side, root) => {
