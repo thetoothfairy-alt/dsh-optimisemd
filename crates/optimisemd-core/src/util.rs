@@ -113,8 +113,8 @@ fn shell_runs_a_script(shell: &str, dir: &Path) -> bool {
     ran && wrote
 }
 
-/// Kept for the tests: a shell that runs a script here, without needing to know its path.
-#[cfg(test)]
+/// Kept for the unix test that proves a silent shell is rejected (Windows has no equivalent stub).
+#[cfg(all(test, unix))]
 fn shell_works(shell: &str) -> bool {
     shell_runs_a_script(shell, &std::env::temp_dir())
 }

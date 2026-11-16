@@ -617,6 +617,7 @@ fn the_historical_wrapper_names_dispatch() {
         return no_shell("the historical wrapper dispatch");
     }
     let root = temp("alias");
+    #[cfg(unix)]
     let home = temp("alias-home");
     std::fs::create_dir_all(root.join("bin")).unwrap();
     let stub = root.join("bin/dsh-belfind");
