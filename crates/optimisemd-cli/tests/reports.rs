@@ -146,6 +146,77 @@ fn digest_cuts_the_question_before_the_runtime_reminder() {
 }
 
 #[test]
+fn digest_skips_harness_notice_messages() {
+    let root = temp("digest-notice");
+    let home = temp("digest-notice-home");
+    let ws = ws_key(&root);
+    transcript(
+        &home.join("sessions").join(&ws).join("session-notice"),
+        "{\"type\":\"session/title\",\"data\":{\"title\":\"A real session\"}}\n\
+         {\"type\":\"user/message\",\"data\":{\"source\":{\"kind\":\"dsh-doublecheck\",\"form\":\"notice\"},\
+         \"content\":[{\"type\":\"text\",\"text\":\"Red/green discipline: no failing test is on record\"}]}}\n\
+         {\"type\":\"user/message\",\"data\":{\"content\":[{\"type\":\"text\",\
+         \"text\":\"A real question about the widget and the email rig\"}]}}\n",
+    );
+    let out = run(&root, &home, &["session-digest"]);
+    assert!(out.status.success());
+    let digest = fs::read_to_string(root.join("memory/logs/session-digest.md")).unwrap();
+    assert!(digest.contains("A real question"), "{digest}");
+    assert!(!digest.contains("Red/green discipline"), "{digest}");
+}
+
+#[test]
+fn session_index_skips_a_malformed_transcript_beside_a_good_one() {
+    let root = temp("index-malformed");
+    fs::create_dir_all(root.join("docs")).unwrap();
+    let home = temp("index-malformed-home");
+    let ws = ws_key(&root);
+    transcript(
+        &home.join("sessions").join(&ws).join("session-bad"),
+        "this is not a transcript at all\n",
+    );
+    transcript(
+        &home.join("sessions").join(&ws).join("session-good"),
+        "{\"createdAt\":1794796632985,\"type\":\"request/header\"}\n\
+         {\"type\":\"session/title\",\"data\":{\"title\":\"The good title\"}}\n",
+    );
+    let out = run(&root, &home, &["session-index"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report = fs::read_to_string(root.join("docs/session-index.md")).unwrap();
+    assert!(report.contains("**1 sessions**"), "{report}");
+    assert!(report.contains("The good title"), "{report}");
+}
+
+#[test]
+fn session_index_check_never_writes_and_fails_on_an_empty_index() {
+    let root = temp("index-check");
+    fs::create_dir_all(root.join("docs")).unwrap();
+    let home = temp("index-check-home");
+    let out = run(&root, &home, &["session-index", "--check"]);
+    assert!(!out.status.success());
+    assert!(!root.join("docs/session-index.md").exists());
+}
+
+#[test]
+fn digest_refuses_an_empty_digest_when_a_transcript_exists() {
+    let root = temp("digest-empty");
+    let home = temp("digest-empty-home");
+    let ws = ws_key(&root);
+    transcript(
+        &home.join("sessions").join(&ws).join("session-garbage"),
+        "not json at all\n",
+    );
+    let out = run(&root, &home, &["session-digest"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("refusing"));
+    assert!(!root.join("memory/logs/session-digest.md").exists());
+}
+
+#[test]
 fn session_commits_uses_iso_dates_and_labels_machine_commits() {
     let root = temp("commits");
     fs::create_dir_all(root.join("docs")).unwrap();
