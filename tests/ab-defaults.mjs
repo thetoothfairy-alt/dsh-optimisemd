@@ -1,7 +1,7 @@
-// A/B the plugin tools' defaults: the installed 0.4.5 package decides track/scope and the save date in JS; this repo
+// A/B the plugin tools' defaults: the installed 0.4.6 package decides track/scope and the save date in JS; this repo
 // decides them in Rust. Both run the same handlers on identical reset fixtures, and the results, store and files are
 // compared. Run: node tests/ab-defaults.mjs   (AB_A overrides the installed package path.)
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -37,6 +37,7 @@ const fixture = (root) => {
     '# MEMORY.md\n\n## Subject facts\n- **An existing row.** (2026-01-01) — `docs/memory-details/01.md`\n',
   )
   writeFileSync(join(root, 'scripts/check-memory-index.sh'), '#!/usr/bin/env bash\nexit 0\n')
+  chmodSync(join(root, 'scripts/check-memory-index.sh'), 0o755)
 }
 
 const runSide = async (side, root) => {

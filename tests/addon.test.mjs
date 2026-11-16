@@ -42,6 +42,7 @@ test('the Rust addon supplies the tool defaults', () => {
       '# MEMORY.md\n\n## Subject facts\n- **An existing row.** (2026-01-01) — `docs/memory-details/01.md`\n',
     )
     writeFileSync(join(dir, 'scripts/check-memory-index.sh'), '#!/usr/bin/env bash\nexit 0\n')
+    chmodSync(join(dir, 'scripts/check-memory-index.sh'), 0o755)
     const written = new RepoWriter(dir).saveChecked(
       'A saved fact.',
       '',

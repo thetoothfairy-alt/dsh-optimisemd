@@ -234,8 +234,8 @@ impl Repo {
             let _ = crate::audit::record(&self.root, "save", "applied", &touched);
             return Ok(written);
         }
-        let gate = std::process::Command::new("bash")
-            .arg(&script)
+        // Run the checker directly: the wrapper may be a shim or the binary itself; `bash <binary>` cannot execute.
+        let gate = std::process::Command::new(&script)
             .current_dir(&self.root)
             .output();
         if gate.as_ref().map(|o| o.status.success()).unwrap_or(false) {
@@ -469,11 +469,17 @@ mod tests {
     fn a_failing_check_rolls_the_save_back() {
         let dir = workspace("checked");
         std::fs::create_dir_all(dir.join("scripts")).unwrap();
+        let gate = dir.join("scripts/check-memory-index.sh");
         std::fs::write(
-            dir.join("scripts/check-memory-index.sh"),
+            &gate,
             "#!/usr/bin/env bash\necho 'MEMORY.md:3: a planted finding'; echo 'indexes 1 · fact rows 0 · findings 1'; exit 1\n",
         )
         .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&gate, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let repo = Repo::new(&dir);
         let before = fs::read_to_string(dir.join("MEMORY.md")).unwrap();
         let out = repo.save_checked(
@@ -500,6 +506,39 @@ mod tests {
         let log = fs::read_to_string(dir.join("memory/logs/repo-writes.log")).unwrap();
         assert!(log.contains("save rolled-back"), "{log}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_save_gate_runs_a_shim_directly() {
+        let dir = workspace("gate-shim");
+        let scripts = dir.join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        let shim = scripts.join("check-memory-index.sh");
+        std::fs::write(
+            &shim,
+            "#!/usr/bin/env bash\necho 'indexes 1 · fact rows 1 · detail rows 0 · findings 0'\nexit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let repo = Repo::new(&dir);
+        repo.save_checked(
+            "A fact behind a shim.",
+            "2026-11-13",
+            "docs/memory-details/01.md",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(std::fs::read_to_string(dir.join("MEMORY.md"))
+            .unwrap()
+            .contains("A fact behind a shim."));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
