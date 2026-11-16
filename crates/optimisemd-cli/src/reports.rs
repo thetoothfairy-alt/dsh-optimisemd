@@ -646,6 +646,29 @@ pub fn session_digest(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
         } else {
             folder.clone()
         };
+        let has_event = text.lines().any(|l| {
+            serde_json::from_str::<serde_json::Value>(l)
+                .map(|v| {
+                    v.get("type")
+                        .and_then(|t| t.as_str())
+                        .map(|t| {
+                            matches!(
+                                t,
+                                "session/title"
+                                    | "session/title-set"
+                                    | "session/start"
+                                    | "request/header"
+                                    | "user/message"
+                                    | "agent/inbox/spliced"
+                            )
+                        })
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false)
+        });
+        if !has_event {
+            continue;
+        }
         let mut title = String::new();
         let mut created: Option<i64> = None;
         let mut asks: Vec<String> = Vec::new();
@@ -750,9 +773,6 @@ pub fn session_digest(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
                     }
                 }
             }
-        }
-        if asks.is_empty() && title.is_empty() {
-            continue;
         }
         let when = match created {
             Some(c) => local_datetime_short(c / 1000),

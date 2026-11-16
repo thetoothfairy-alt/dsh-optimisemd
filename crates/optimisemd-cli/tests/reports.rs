@@ -192,6 +192,24 @@ fn session_index_skips_a_malformed_transcript_beside_a_good_one() {
 }
 
 #[test]
+fn digest_includes_a_session_with_no_question_or_title() {
+    let root = temp("digest-notitle");
+    let home = temp("digest-notitle-home");
+    let ws = ws_key(&root);
+    transcript(
+        &home
+            .join("sessions")
+            .join(&ws)
+            .join("2222bbbb-3333-4444-5555-666666666666"),
+        "{\"createdAt\":1794796632985,\"type\":\"request/header\"}\n",
+    );
+    let out = run(&root, &home, &["session-digest"]);
+    assert!(out.status.success());
+    let digest = fs::read_to_string(root.join("memory/logs/session-digest.md")).unwrap();
+    assert!(digest.contains("2222bbbb"), "{digest}");
+}
+
+#[test]
 fn digest_skips_a_plugin_notice() {
     let root = temp("digest-plugin");
     let home = temp("digest-plugin-home");
