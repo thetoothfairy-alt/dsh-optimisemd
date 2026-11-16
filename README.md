@@ -87,6 +87,16 @@ Per-profile overrides (for example a different database file) go in the profile'
     dbPath: /tmp/scratch-memory.db
 ```
 
+## Gated saves need a POSIX shell
+
+`memory_save` runs the workspace's `scripts/check-memory-index.sh` before a save stands, and `find`
+runs the workspace's finder. Both are shell scripts. Linux and macOS always have `/bin/sh`; **on
+Windows a POSIX shell means Git for Windows** (its `bash` is looked for at the standard install
+locations, so it does not need to be on `PATH`). Without any shell the gate **cannot run, so the
+save is refused and rolled back** — that is the safe behaviour, not a failure. The Windows test
+matrix runs the shell-backed tests with `REQUIRE_SHELL=1`, so a runner that loses its shell is a
+red run rather than a silent skip.
+
 ## Build and test
 
 ```sh
@@ -94,6 +104,19 @@ pnpm build     # cargo build --release + native/dsh-optimisemd.<os>-<arch>.node
 pnpm test      # node --test tests/*.test.mjs
 cargo test     # store + snapshot unit tests
 ```
+
+## Releasing
+
+A release tag is written **once**, after the gates are green — never moved or force-pushed. If a
+release is wrong, the fix is a new version, because a tag is what people pin and what caches hold.
+
+- CI (`release.yml`) runs format, clippy, the Rust tests and the host tests on Ubuntu **and**
+  Windows, then builds the linux-x64 and win32-x64 install files from the tag.
+- The macOS install file is built on a Mac from the tag (`scripts/build-macos-air.sh <tag>`) and
+  uploaded to the same release by hand — there is no macOS runner on the plan, so that artifact is
+  the one part without CI provenance.
+- Publish is blocked by a red test run and by a tag/version mismatch (`package.json` and
+  `Cargo.toml` must equal the tag's version).
 
 ## Migrating from dsh-memento
 

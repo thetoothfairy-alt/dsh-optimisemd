@@ -15,6 +15,9 @@ jobs:
           - os: ubuntu-latest
           - os: windows-latest
     runs-on: ${{ matrix.os }}
+    # The gate tests need a POSIX shell: fail loudly if the image loses one instead of skipping.
+    env:
+      REQUIRE_SHELL: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

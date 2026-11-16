@@ -8,6 +8,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
+/// The finder and the wrapper are shell scripts: a host with no POSIX shell cannot run them. Say so
+/// out loud instead of compiling the test out — and fail when REQUIRE_SHELL=1 (CI sets it).
+fn no_shell(what: &str) {
+    if std::env::var("REQUIRE_SHELL").as_deref() == Ok("1") {
+        panic!("{what} needs a POSIX shell and this host has none (REQUIRE_SHELL=1)");
+    }
+    eprintln!("SKIPPED {what}: no POSIX shell on this host (REQUIRE_SHELL=1 makes that a failure)");
+}
+
 fn temp(label: &str) -> PathBuf {
     let n = NEXT.fetch_add(1, Ordering::SeqCst);
     let dir = std::env::temp_dir().join(format!(
@@ -47,9 +56,11 @@ fn run(root: &Path, home: &Path, args: &[&str]) -> std::process::Output {
 }
 
 // The finder stub is a bash script the binary executes directly: a unix contract.
-#[cfg(unix)]
 #[test]
 fn find_does_not_hijack_a_question_that_starts_with_index() {
+    if !optimisemd_core::util::shell_available() {
+        return no_shell("find running the finder stub");
+    }
     let root = temp("find");
     let home = temp("find-home");
     for p in [

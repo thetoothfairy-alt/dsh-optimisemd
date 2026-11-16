@@ -479,9 +479,13 @@ impl Store {
             }
         }
         // A consolidation replaces its victims: the budget is what the pair ends up holding, not
-        // what it holds plus the whole new text. The deletes and the insert move in one transaction,
-        // so an interruption cannot leave victims deleted with no survivor.
+        // what it holds plus the whole new text. The check and the writes move in ONE transaction —
+        // the usage is read after BEGIN IMMEDIATE, so a concurrent writer cannot slip past the cap
+        // between the check and the deletes (v0.4.9; add and replace already worked this way).
         let victims_chars: usize = victims.iter().map(|v| v.text.chars().count()).sum();
+        let id = uuid::Uuid::new_v4().to_string();
+        let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".into());
+        let tx = Tx::begin(&self.conn)?;
         let after = self.usage(track, scope)? - victims_chars + text.chars().count();
         let cap = self.cap(track);
         if after > cap {
@@ -492,9 +496,6 @@ impl Store {
                 cap,
             });
         }
-        let id = uuid::Uuid::new_v4().to_string();
-        let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".into());
-        let tx = Tx::begin(&self.conn)?;
         for v in &victims {
             self.conn
                 .execute("delete from entries where id=?1", rusqlite::params![v.id])?;

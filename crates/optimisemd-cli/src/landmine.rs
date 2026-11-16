@@ -128,6 +128,19 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The gate and the finder are shell scripts: a host with no POSIX shell cannot run them. Instead of
+    /// compiling these tests out, say so out loud — and fail when REQUIRE_SHELL=1 (CI sets it, so a
+    /// runner that loses its shell is a red run, not a silent skip).
+    fn no_shell(what: &str) {
+        if std::env::var("REQUIRE_SHELL").as_deref() == Ok("1") {
+            panic!("{what} needs a POSIX shell and this host has none (REQUIRE_SHELL=1)");
+        }
+        eprintln!(
+            "SKIPPED {what}: no POSIX shell on this host (REQUIRE_SHELL=1 makes that a failure)"
+        );
+    }
+
     use super::*;
     use std::path::PathBuf;
 
@@ -202,11 +215,13 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    // The success path runs a workspace shell script as its guard — a unix contract, like the
-    // chmod and symlink tests elsewhere. Windows CI runs the refusal paths above.
-    #[cfg(unix)]
+    // The success path runs a workspace shell script as its guard: tested wherever a POSIX shell
+    // exists, announced (and on CI, failed) where there is none (v0.4.9).
     #[test]
     fn a_valid_landmine_lands_and_is_audited() {
+        if !optimisemd_core::util::shell_available() {
+            return no_shell("a landmine landing through the gate");
+        }
         let dir = fixture("ok");
         assert_eq!(
             add(&dir, args("01.md", "A trap.", "fresh-slug")).unwrap(),

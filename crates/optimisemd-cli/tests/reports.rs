@@ -11,6 +11,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
+/// The finder and the wrapper are shell scripts: a host with no POSIX shell cannot run them. Say so
+/// out loud instead of compiling the test out — and fail when REQUIRE_SHELL=1 (CI sets it).
+fn no_shell(what: &str) {
+    if std::env::var("REQUIRE_SHELL").as_deref() == Ok("1") {
+        panic!("{what} needs a POSIX shell and this host has none (REQUIRE_SHELL=1)");
+    }
+    eprintln!("SKIPPED {what}: no POSIX shell on this host (REQUIRE_SHELL=1 makes that a failure)");
+}
+
 fn temp(label: &str) -> PathBuf {
     let n = NEXT.fetch_add(1, Ordering::SeqCst);
     let dir =
@@ -566,10 +575,11 @@ fn check_selftest_proves_the_unparseable_row_finding() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("selftest PASS"));
 }
 
-// The finder stub is a bash script executed directly: a unix contract (the workspace tool runs on WSL).
-#[cfg(unix)]
 #[test]
 fn find_runs_the_finder_and_reindexes() {
+    if !optimisemd_core::util::shell_available() {
+        return no_shell("find running the finder stub");
+    }
     let root = temp("find");
     let home = temp("find-home");
     std::fs::create_dir_all(root.join("bin")).unwrap();
@@ -601,9 +611,11 @@ fn find_refuses_without_the_finder_binary() {
 }
 
 // The historical-name dispatch runs through a symlink and a bash stub: a unix contract.
-#[cfg(unix)]
 #[test]
 fn the_historical_wrapper_names_dispatch() {
+    if !optimisemd_core::util::shell_available() {
+        return no_shell("the historical wrapper dispatch");
+    }
     let root = temp("alias");
     let home = temp("alias-home");
     std::fs::create_dir_all(root.join("bin")).unwrap();

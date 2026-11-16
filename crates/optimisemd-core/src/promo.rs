@@ -225,6 +225,18 @@ impl Promoter {
         if dry_run || report.demote.is_empty() {
             return Ok(report);
         }
+        let (applied, backup) = self.apply_rows(&report.demote)?;
+        report.applied = applied;
+        report.backup = Some(backup.display().to_string());
+        Ok(report)
+    }
+
+    /// Move one row per candidate into its part and remove each row's own line from the index.
+    /// Every file is backed up once, before its first change, and **restored on every error path** —
+    /// a drift that stops the loop must not leave half a move behind (v0.4.9).
+    fn apply_rows(&self, demote: &[Row]) -> Result<(Vec<String>, PathBuf), PromoError> {
+        // One save's worth of backups is useful; an unbounded pile is clutter (v0.4.9).
+        crate::util::prune_backups(&self.root.join("memory/logs"), &["promotion-apply-"], 5);
         let stamp = format!(
             "promotion-apply-{}-{}",
             std::time::SystemTime::now()
@@ -238,63 +250,72 @@ impl Promoter {
         let mut backed: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut body = self.read("MEMORY.md")?;
         let today = today_local();
-        for row in &report.demote {
-            let part_rel = row.pointer.clone();
-            let part_path = self.root.join(&part_rel);
-            let mut part = if part_path.exists() {
-                fs::read_to_string(&part_path)?
-            } else {
-                continue;
-            };
-            // One pristine copy per file, before its first change, restored by this relative path.
-            for rel in ["MEMORY.md".to_string(), part_rel.clone()] {
-                if backed.insert(rel.clone()) {
-                    let src = self.root.join(&rel);
-                    if src.exists() {
-                        let dst = backup.join(&rel);
-                        if let Some(dir) = dst.parent() {
-                            fs::create_dir_all(dir)?;
+        let mut applied: Vec<String> = Vec::new();
+        let mut run = || -> Result<(), PromoError> {
+            for row in demote {
+                let part_rel = row.pointer.clone();
+                let part_path = self.root.join(&part_rel);
+                let mut part = if part_path.exists() {
+                    fs::read_to_string(&part_path)?
+                } else {
+                    continue;
+                };
+                // One pristine copy per file, before its first change, restored by this relative path.
+                for rel in ["MEMORY.md".to_string(), part_rel.clone()] {
+                    if backed.insert(rel.clone()) {
+                        let src = self.root.join(&rel);
+                        if src.exists() {
+                            let dst = backup.join(&rel);
+                            if let Some(dir) = dst.parent() {
+                                fs::create_dir_all(dir)?;
+                            }
+                            fs::copy(&src, &dst)?;
                         }
-                        fs::copy(&src, &dst)?;
                     }
                 }
-            }
-            if !part.contains(DEMOTED_HEADING) {
-                if !part.ends_with('\n') {
-                    part.push('\n');
+                if !part.contains(DEMOTED_HEADING) {
+                    if !part.ends_with('\n') {
+                        part.push('\n');
+                    }
+                    part.push_str(&format!("\n{DEMOTED_HEADING}\n\n{DEMOTED_PARAGRAPH}\n"));
                 }
-                part.push_str(&format!("\n{DEMOTED_HEADING}\n\n{DEMOTED_PARAGRAPH}\n"));
-            }
-            let old_line = format!("- **{}** ({}) — `{}`", row.text, row.date, row.pointer);
-            let moved = format!(
-                "- **{}** — demoted {today} from `MEMORY.md` (row dated {}); the fact lives here.",
-                row.text, row.date
-            );
-            part.push_str(&moved);
-            part.push('\n');
-            crate::util::write_atomic(&part_path, &part)?;
-            // Remove the row's own line, and nothing else.
-            let mut out: Vec<&str> = Vec::new();
-            let mut removed = false;
-            for l in body.lines() {
-                if !removed && l == old_line {
-                    removed = true;
-                    continue;
+                let old_line = format!("- **{}** ({}) — `{}`", row.text, row.date, row.pointer);
+                let moved = format!(
+                    "- **{}** — demoted {today} from `MEMORY.md` (row dated {}); the fact lives here.",
+                    row.text, row.date
+                );
+                part.push_str(&moved);
+                part.push('\n');
+                crate::util::write_atomic(&part_path, &part)?;
+                // Remove the row's own line, and nothing else.
+                let mut out: Vec<&str> = Vec::new();
+                let mut removed = false;
+                for l in body.lines() {
+                    if !removed && l == old_line {
+                        removed = true;
+                        continue;
+                    }
+                    out.push(l);
                 }
-                out.push(l);
+                if !removed {
+                    return Err(PromoError::Parse(format!(
+                        "the row to move is not an exact line in MEMORY.md: {old_line}"
+                    )));
+                }
+                body = out.join("\n");
+                body.push('\n');
+                applied.push(format!("{part_rel}: {moved}"));
             }
-            if !removed {
-                return Err(PromoError::Parse(format!(
-                    "the row to move is not an exact line in MEMORY.md: {old_line}"
-                )));
-            }
-            body = out.join("\n");
-            body.push('\n');
-            report.applied.push(format!("{part_rel}: {moved}"));
+            crate::util::write_atomic(&self.root.join("MEMORY.md"), &body)?;
+            Ok(())
+        };
+        if let Err(e) = run() {
+            let rels: Vec<String> = backed.iter().cloned().collect();
+            let _ = crate::util::restore_backup(&self.root, &backup, &rels);
+            let _ = crate::audit::record(&self.root, "promote-apply", "rolled-back", &rels);
+            return Err(e);
         }
-        crate::util::write_atomic(&self.root.join("MEMORY.md"), &body)?;
-        report.backup = Some(backup.display().to_string());
-        Ok(report)
+        Ok((applied, backup))
     }
 }
 
@@ -320,6 +341,73 @@ mod tests {
         .unwrap();
         fs::write(dir.join("MEMORY.md"), "# MEMORY.md\n\n## Read these first\n- **A protected row.** (2020-01-01) — `docs/memory-details/01.md`\n\n## Subject facts\n- **A quiet row.** (2020-01-01) — `docs/memory-details/01.md`\n- **A fresh row.** (2026-11-13) — `docs/memory-details/01.md`\n- **A runbook row.** (2020-01-01) — `docs/runbooks/memory.md`\n").unwrap();
         dir
+    }
+
+    #[test]
+    fn a_failed_apply_restores_the_parts_it_had_written() {
+        let dir = fixture("applyfail");
+        let before = fs::read_to_string(dir.join("docs/memory-details/01.md")).unwrap();
+        // The second row is not an exact line in the index: the loop stops after the first write.
+        let rows = vec![
+            Row {
+                section: "Subject facts".into(),
+                text: "A quiet row.".into(),
+                date: "2020-01-01".into(),
+                pointer: "docs/memory-details/01.md".into(),
+            },
+            Row {
+                section: "Subject facts".into(),
+                text: "A row that is not a line".into(),
+                date: "2020-01-01".into(),
+                pointer: "docs/memory-details/01.md".into(),
+            },
+        ];
+        let out = Promoter::new(&dir).apply_rows(&rows);
+        assert!(out.is_err(), "a drifted row must fail the apply");
+        // Nothing half-moved: the part is exactly as it was, and the rollback is audited.
+        assert_eq!(
+            fs::read_to_string(dir.join("docs/memory-details/01.md")).unwrap(),
+            before,
+            "the part must be restored, not left with a stray demoted line"
+        );
+        let log = fs::read_to_string(dir.join("memory/logs/repo-writes.log")).unwrap_or_default();
+        assert!(
+            log.contains("promote-apply rolled-back"),
+            "the rollback must be audited: {log}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pruning_keeps_the_newest_five_backups() {
+        let dir = std::env::temp_dir().join(format!("optimisemd-prune-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        for i in 0..7u64 {
+            let d = dir.join(format!("promotion-apply-{i}"));
+            fs::create_dir_all(&d).unwrap();
+            // Explicit mtimes: the ordering must not depend on how fast the loop runs.
+            let f = fs::File::create(d.join("MEMORY.md")).unwrap();
+            let when = std::time::SystemTime::now() - std::time::Duration::from_secs(100 - i * 10);
+            f.set_modified(when).unwrap();
+            drop(f);
+        }
+        let removed = crate::util::prune_backups(&dir, &["promotion-apply-"], 5);
+        assert_eq!(removed, 2, "two oldest of seven must go");
+        let left: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(
+            left.contains(&"promotion-apply-6".to_string()),
+            "newest kept"
+        );
+        assert!(
+            !left.contains(&"promotion-apply-0".to_string()),
+            "oldest pruned"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

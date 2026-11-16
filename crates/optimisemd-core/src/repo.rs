@@ -284,6 +284,12 @@ impl Repo {
         slug: Option<&str>,
         detail: Option<&str>,
     ) -> Result<Written, RepoError> {
+        // Housekeeping before the write: one save's worth of backups is useful, an unbounded pile
+        // is clutter, and a crashed write's temp file is litter (v0.4.9).
+        crate::util::prune_backups(&self.root.join("memory/logs"), &["save-"], 5);
+        let day = std::time::Duration::from_secs(86_400);
+        crate::util::prune_tmp(&self.root, day);
+        crate::util::prune_tmp(&self.root.join("memory"), day);
         let stamp = std::process::id();
         let backup = self.root.join("memory/logs").join(format!("save-{stamp}"));
         std::fs::create_dir_all(&backup)?;
@@ -490,6 +496,19 @@ impl Repo {
 
 #[cfg(test)]
 mod tests {
+
+    /// The gate and the finder are shell scripts: a host with no POSIX shell cannot run them. Instead of
+    /// compiling these tests out, say so out loud — and fail when REQUIRE_SHELL=1 (CI sets it, so a
+    /// runner that loses its shell is a red run, not a silent skip).
+    fn no_shell(what: &str) {
+        if std::env::var("REQUIRE_SHELL").as_deref() == Ok("1") {
+            panic!("{what} needs a POSIX shell and this host has none (REQUIRE_SHELL=1)");
+        }
+        eprintln!(
+            "SKIPPED {what}: no POSIX shell on this host (REQUIRE_SHELL=1 makes that a failure)"
+        );
+    }
+
     use super::*;
 
     fn workspace(tag: &str) -> PathBuf {
@@ -656,11 +675,13 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    // Executing a shell shim is the subject here — a unix contract (the Windows test host has no
-    // workspace shell; the refusal path is covered by a_failing_check_rolls_the_save_back).
-    #[cfg(unix)]
+    // The gate script is the subject here. It runs wherever a POSIX shell exists (CI has one on both
+    // hosts); without one the test says so instead of being compiled out (v0.4.9).
     #[test]
     fn the_save_gate_runs_a_shim_directly() {
+        if !crate::util::shell_available() {
+            return no_shell("the save gate");
+        }
         let dir = workspace("gate-shim");
         let scripts = dir.join("scripts");
         std::fs::create_dir_all(&scripts).unwrap();
