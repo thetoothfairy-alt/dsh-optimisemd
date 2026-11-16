@@ -32,15 +32,39 @@ pub struct Written {
 pub const MAX_ROW_TEXT: usize = 200;
 pub const DEFAULT_SECTION: &str = "## Subject facts";
 
-/// Strict YYYY-MM-DD: four digits, dash, two digits, dash, two digits. A date that reaches a write must pass this.
+/// A real calendar date in YYYY-MM-DD: the shape, a month 1-12, and a day that exists in that month. A date that
+/// reaches a write must pass this; a lying `date` command (2026-02-30) must not create a file at a wrong path.
 pub fn valid_date(date: &str) -> bool {
     let b = date.as_bytes();
-    b.len() == 10
-        && b[4] == b'-'
-        && b[7] == b'-'
-        && b[..4].iter().all(u8::is_ascii_digit)
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return false;
+    }
+    if !(b[..4].iter().all(u8::is_ascii_digit)
         && b[5..7].iter().all(u8::is_ascii_digit)
-        && b[8..].iter().all(u8::is_ascii_digit)
+        && b[8..].iter().all(u8::is_ascii_digit))
+    {
+        return false;
+    }
+    let year: i32 = date[..4].parse().unwrap_or(0);
+    let month: u32 = date[5..7].parse().unwrap_or(0);
+    let day: u32 = date[8..].parse().unwrap_or(0);
+    if !(1..=12).contains(&month) || day == 0 {
+        return false;
+    }
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let last = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if leap {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    };
+    day <= last
 }
 
 pub struct Repo {

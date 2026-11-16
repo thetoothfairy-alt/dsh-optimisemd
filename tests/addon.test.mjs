@@ -1,5 +1,5 @@
 // The addon is the whole mechanism: caps, unique-match, audit, snapshot visibility.
-import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -97,6 +97,12 @@ test('a bad date command is refused before any write', () => {
       stub('true')
       assert.match(attempt(''), /returned nothing/)
       assert.equal(readFileSync(join(dir, 'MEMORY.md'), 'utf8'), before)
+      for (const lying of ['2026-02-30', '2026-99-99']) {
+        stub(`echo ${lying}`)
+        assert.match(attempt(''), /not YYYY-MM-DD/)
+        assert.equal(readFileSync(join(dir, 'MEMORY.md'), 'utf8'), before)
+        assert.equal(existsSync(join(dir, 'memory', `${lying}.md`)), false)
+      }
     } finally {
       process.env.PATH = oldPath
     }
