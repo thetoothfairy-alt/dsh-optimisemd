@@ -8,15 +8,15 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-/// Write a file the crash-safe way: a temp file beside the target, flushed to disk, then renamed
-/// over it. A crash or a full disk leaves either the old file or the new one — never a truncated one.
-/// Set by a test to make the next atomic write in that thread fail after its temp file exists.
-/// Thread-local on purpose: tests run in parallel, and a global flag gets consumed by a neighbour.
+// Set by a test to make the next atomic write in that thread fail after its temp file exists.
+// Thread-local on purpose: tests run in parallel, and a global flag gets consumed by a neighbour.
 #[cfg(test)]
 thread_local! {
     static FAIL_AFTER_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// Write a file the crash-safe way: a temp file beside the target, flushed to disk, then renamed
+/// over it. A crash or a full disk leaves either the old file or the new one — never a truncated one.
 pub fn write_atomic(path: &Path, body: &str) -> std::io::Result<()> {
     let dir = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),

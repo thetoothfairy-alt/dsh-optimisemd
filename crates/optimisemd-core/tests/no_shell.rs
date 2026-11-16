@@ -9,6 +9,8 @@
 //! test running beside it in the same process could then fail to spawn a shell. One test, one
 //! process, no neighbours to disturb.
 
+#![cfg(unix)]
+
 use optimisemd_core::Repo;
 
 fn root(tag: &str) -> std::path::PathBuf {
@@ -21,7 +23,6 @@ fn root(tag: &str) -> std::path::PathBuf {
     dir
 }
 
-#[cfg(unix)]
 #[test]
 fn a_save_with_no_shell_says_the_check_could_not_run_and_rolls_back() {
     let root = root("save");
