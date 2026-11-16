@@ -627,6 +627,40 @@ fn find_runs_a_finder_that_is_only_a_script() {
     assert!(text.contains("stub find hello world"), "{text}");
 }
 
+// Every store write refreshes the finder's index. A script-only finder must be refreshed through
+// the shell too, and a refresh that cannot run must say so instead of leaving the index stale
+// silently (the direct spawn cost exactly that on Windows: error 193, swallowed).
+#[test]
+fn a_tier0_write_refreshes_through_a_script_only_finder() {
+    if !optimisemd_core::util::shell_available() {
+        return no_shell("a tier0 write refreshing a script-only finder");
+    }
+    let root = temp("refresh-script-only");
+    let home = temp("refresh-script-only-home");
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    // No chmod: on unix this is not executable, on Windows it is not runnable.
+    std::fs::write(
+        root.join("bin/dsh-belfind"),
+        "#!/usr/bin/env bash\nprintf 'ran %s\\n' \"$*\" > \"$(dirname \"$0\")/refresh-ran.txt\"\n",
+    )
+    .unwrap();
+    let out = run(
+        &root,
+        &home,
+        &["tier0", "add", "--text", "hello from the refresh test"],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ran = std::fs::read_to_string(root.join("bin/refresh-ran.txt")).unwrap_or_default();
+    assert!(
+        ran.contains("ran index"),
+        "the finder was not refreshed through the shell: {ran:?}"
+    );
+}
+
 #[test]
 fn find_refuses_without_the_finder_binary() {
     let root = temp("find-bare");

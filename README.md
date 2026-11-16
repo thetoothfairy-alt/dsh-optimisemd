@@ -107,14 +107,16 @@ cargo test     # store + snapshot unit tests
 
 ## Releasing
 
-A release tag is written **once**, after the gates are green — never moved or force-pushed. If a
-release is wrong, the fix is a new version, because a tag is what people pin and what caches hold.
+A release tag is written after the gates are green, and once a release exists it is never moved or
+force-pushed: the fix is a new version, because a tag is what people pin and what caches hold. A tag
+that has never had a release attached may be re-pointed when CI finds a fault (0.4.9 was, twice),
+and the release record says which commit it finally named.
 
 - CI (`release.yml`) runs format, clippy, the Rust tests and the host tests on Ubuntu **and**
   Windows, then builds the linux-x64 and win32-x64 install files from the tag.
 - The macOS install file is built on a Mac from the tag (`scripts/build-macos-air.sh <tag>`) and
   uploaded to the same release by hand — there is no macOS runner on the plan, so that artifact is
-  the one part without CI provenance.
+  the one part without CI provenance. This is unchanged since 0.4.5.
 - Publish is blocked by a red test run and by a tag/version mismatch (`package.json` and
   `Cargo.toml` must equal the tag's version).
 

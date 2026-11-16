@@ -21,13 +21,15 @@ pub fn write_atomic(path: &Path, body: &str) -> std::io::Result<()> {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
     let tmp = dir.join(format!(".{name}.tmp-{}", std::process::id()));
-    {
+    // Any failure after the temp exists must take it away: a create, write or sync error would
+    // otherwise leave a stray `.tmp-` file beside the target (the prune only runs once a day).
+    let written = (|| -> std::io::Result<()> {
         let mut f = fs::File::create(&tmp)?;
         f.write_all(body.as_bytes())?;
         f.sync_all()?;
-    }
-    if let Err(e) = fs::rename(&tmp, path) {
-        // Do not leave the temp behind when the rename is what failed.
+        Ok(())
+    })();
+    if let Err(e) = written.and_then(|()| fs::rename(&tmp, path)) {
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
@@ -342,6 +344,25 @@ mod tests {
             left.iter().all(|n| !n.contains(".tmp-")),
             "temp left behind: {left:?}"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // The temp must not survive ANY failure after it exists, not just a failed rename: a target
+    // that is a directory fails the rename with the temp already written.
+    #[test]
+    fn a_write_onto_a_directory_leaves_no_temp_file() {
+        let dir = temp("write-onto-dir");
+        let target = dir.join("memory");
+        fs::create_dir_all(&target).unwrap();
+        assert!(write_atomic(&target, "body").is_err());
+        let stray: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains(".tmp-"))
+            .collect();
+        assert!(stray.is_empty(), "a failed write left {stray:?}");
+        assert!(target.is_dir(), "the target directory must survive");
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -756,7 +756,11 @@ fn find(root: &Path, reindex: bool, query: Vec<String>) -> Result<i32, Box<dyn s
 fn refresh(root: &Path) {
     let _ = export_inner(root);
     if let Some(bin) = finder(root) {
-        let _ = Command::new(bin).arg("index").current_dir(root).status();
+        // The same direct-then-shell rule as `find`: a script finder cannot be spawned directly on
+        // Windows (error 193), and swallowing that error left the index stale without a word.
+        if let Err(e) = run_finder(&bin, root, &["index"]) {
+            eprintln!("warning: the search index was not refreshed ({e})");
+        }
     }
 }
 

@@ -375,6 +375,7 @@ impl Repo {
         // Report WHY, not just that it failed: the checker's findings are the reason, and a generic message sends the
         // session hunting through files it may not have touched (the summary line is dropped).
         let findings = gate
+            .as_ref()
             .ok()
             .map(|o| {
                 format!(
@@ -391,11 +392,7 @@ impl Repo {
                     .join("; ")
             })
             .unwrap_or_default();
-        let msg = if findings.is_empty() {
-            "the index check failed; the save was rolled back".to_string()
-        } else {
-            format!("the index check failed; the save was rolled back — {findings}")
-        };
+        let msg = gate_failure_message(&gate, &findings);
         let _ = crate::audit::record(&self.root, "save", "rolled-back", &touched);
         Err(RepoError::Invalid(msg))
     }
@@ -491,6 +488,21 @@ impl Repo {
         file.write_all(header.as_bytes())?;
         file.write_all(format!("- {}\n", text.trim()).as_bytes())?;
         Ok(path)
+    }
+}
+
+/// What the caller is told when the gate stops a save. A shell that could not be found is not a
+/// check failure: name the remedy, or the user hunts through files for a fault that is the host's.
+fn gate_failure_message(
+    gate: &Result<std::process::Output, std::io::Error>,
+    findings: &str,
+) -> String {
+    match gate {
+        Err(e) => format!("the index check could not run ({e}); the save was rolled back"),
+        Ok(_) if findings.is_empty() => {
+            "the index check failed; the save was rolled back".to_string()
+        }
+        Ok(_) => format!("the index check failed; the save was rolled back — {findings}"),
     }
 }
 
@@ -677,6 +689,19 @@ mod tests {
 
     // The gate script is the subject here. It runs wherever a POSIX shell exists (CI has one on both
     // hosts); without one the test says so instead of being compiled out (v0.4.9).
+    // A host without a usable shell is not a failed check: the message must say the check could
+    // not run and name the remedy, or the user is sent looking for a fault in their files.
+    #[test]
+    fn a_missing_shell_says_the_check_could_not_run() {
+        let gate: Result<std::process::Output, std::io::Error> = Err(std::io::Error::other(
+            "no usable shell to run the gate (on Windows install Git for Windows)",
+        ));
+        let msg = gate_failure_message(&gate, "");
+        assert!(msg.contains("could not run"), "{msg}");
+        assert!(msg.contains("install Git for Windows"), "{msg}");
+        assert!(!msg.contains("index check failed"), "{msg}");
+    }
+
     #[test]
     fn the_save_gate_runs_a_shim_directly() {
         if !crate::util::shell_available() {

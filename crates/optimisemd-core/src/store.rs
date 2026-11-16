@@ -747,7 +747,15 @@ mod hardening_tests {
         store2
             .add("user", "user-global", &big, &[], "test", "", "", "")
             .unwrap();
-        // A merge that grows the pair past the cap is still refused.
+        // A merge that grows the pair past the cap is still refused — and refused *whole*: the
+        // victim is still there, the replacement is not, and the usage did not move.
+        let before: Vec<String> = store2
+            .list_entries()
+            .unwrap()
+            .iter()
+            .map(|e| e.id.clone())
+            .collect();
+        let usage_before = store2.usage("user", "user-global").unwrap();
         assert!(matches!(
             store2.merge(
                 &["AAAA".into()],
@@ -759,8 +767,96 @@ mod hardening_tests {
             ),
             Err(StoreError::Budget { .. })
         ));
+        let after_ids: Vec<String> = store2
+            .list_entries()
+            .unwrap()
+            .iter()
+            .map(|e| e.id.clone())
+            .collect();
+        assert_eq!(
+            before, after_ids,
+            "a refused merge must not delete anything"
+        );
+        assert_eq!(
+            usage_before,
+            store2.usage("user", "user-global").unwrap(),
+            "a refused merge must not change the usage"
+        );
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&dir2);
+    }
+
+    // The cap check must run INSIDE the write transaction: a row committed by another writer while
+    // the merge waits for the lock has to count. With the read outside BEGIN IMMEDIATE the merge
+    // reads the pre-commit usage and writes a store that is over its cap (red before 0.4.10).
+    #[test]
+    fn a_merge_counts_a_row_committed_while_it_waited_for_the_lock() {
+        let (dir, store) = fresh("merge-lock");
+        store
+            .add(
+                "user",
+                "user-global",
+                "AAAA".repeat(475).as_str(), // 1900 chars
+                &[],
+                "test",
+                "",
+                "",
+                "",
+            )
+            .unwrap();
+        let path = dir.join("m.db");
+        let other = Connection::open(&path).unwrap();
+        other
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        other.execute_batch("BEGIN IMMEDIATE").unwrap();
+        other
+            .execute(
+                "insert into entries (id,track,scope,workspace_key,agent_key,text,tags,source,created_at) values (?1,?2,?3,'','',?4,?5,?6,?7)",
+                rusqlite::params![
+                    "other-row",
+                    "user",
+                    "user-global",
+                    "X".repeat(1900),
+                    "[]",
+                    "test",
+                    1_763_000_000i64
+                ],
+            )
+            .unwrap();
+        let dir2 = dir.clone();
+        let waiter = std::thread::spawn(move || {
+            let s = Store::open(&dir2.join("m.db"), Budgets::default()).unwrap();
+            s.merge(
+                &["AAAA".into()],
+                "user",
+                "user-global",
+                &"C".repeat(200),
+                &[],
+                "test",
+            )
+        });
+        // Let the merge block on the lock, then commit: 1900 + 1900 + 200 - 1900 > 2000.
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        other.execute_batch("COMMIT").unwrap();
+        let result = waiter.join().unwrap();
+        assert!(
+            matches!(result, Err(StoreError::Budget { .. })),
+            "the merge must count the row committed while it waited: {result:?}"
+        );
+        // The refusal is whole: both rows are still there and the survivor was not written.
+        let texts: Vec<String> = store
+            .list_entries()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.text)
+            .collect();
+        assert_eq!(texts.len(), 2, "a refused merge deletes nothing: {texts:?}");
+        assert!(
+            !texts.iter().any(|t| t.starts_with("CCCC")),
+            "a refused merge writes nothing: {texts:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
