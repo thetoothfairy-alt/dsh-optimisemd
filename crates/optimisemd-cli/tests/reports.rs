@@ -627,6 +627,72 @@ fn find_runs_a_finder_that_is_only_a_script() {
     assert!(text.contains("stub find hello world"), "{text}");
 }
 
+// When no shell can run the finder, the refresh cannot happen: the save must still land, but the
+// warning must say the index was not refreshed. A silent skip is how a stale index goes unnoticed.
+// Unix-only: on Windows the finder is looked for in fixed Git locations, so the no-shell state
+// cannot be produced there (the message itself is not platform-specific).
+// A finder that exists, runs and fails leaves the index just as stale as one that cannot start,
+// so it must be reported too (v0.4.12: before this, only a spawn error said anything).
+#[test]
+fn a_finder_that_fails_says_the_index_was_not_refreshed() {
+    if !optimisemd_core::util::shell_available() {
+        return no_shell("a failing finder");
+    }
+    let root = temp("refresh-finder-fails");
+    let home = temp("refresh-finder-fails-home");
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    let finder = root.join("bin/dsh-belfind");
+    std::fs::write(&finder, "#!/bin/sh\nexit 3\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&finder, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let out = run(
+        &root,
+        &home,
+        &["tier0", "add", "--text", "hello from a failing finder"],
+    );
+    assert!(
+        out.status.success(),
+        "the save itself must still land: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("search index was not refreshed") && err.contains("exited with"),
+        "a finder that fails must say the index was not refreshed: {err:?}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_refresh_with_no_shell_says_the_index_was_not_refreshed() {
+    let root = temp("refresh-no-shell");
+    let home = temp("refresh-no-shell-home");
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    // A script only a shell could run, and the shell probe is starved by an empty PATH below.
+    std::fs::write(root.join("bin/dsh-belfind"), "#!/bin/sh\nexit 0\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_dsh-optimisemd"))
+        .args(["tier0", "add", "--text", "hello with no shell"])
+        .current_dir(&root)
+        .env("DSH_HOME", &home)
+        .env("PATH", home.join("empty-path"))
+        .env_remove("SHELL")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "the save itself must still land: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("search index was not refreshed"),
+        "the skipped refresh must say so: {err:?}"
+    );
+}
+
 // Every store write refreshes the finder's index. A script-only finder must be refreshed through
 // the shell too, and a refresh that cannot run must say so instead of leaving the index stale
 // silently (the direct spawn cost exactly that on Windows: error 193, swallowed).

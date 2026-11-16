@@ -757,9 +757,15 @@ fn refresh(root: &Path) {
     let _ = export_inner(root);
     if let Some(bin) = finder(root) {
         // The same direct-then-shell rule as `find`: a script finder cannot be spawned directly on
-        // Windows (error 193), and swallowing that error left the index stale without a word.
-        if let Err(e) = run_finder(&bin, root, &["index"]) {
-            eprintln!("warning: the search index was not refreshed ({e})");
+        // Windows (error 193), and swallowing that error left the index stale without a word. A
+        // finder that starts and then fails is the same outcome for the reader — a stale index —
+        // so a non-zero exit is reported too, not only a spawn error (v0.4.12).
+        match run_finder(&bin, root, &["index"]) {
+            Ok(status) if status.success() => {}
+            Ok(status) => eprintln!(
+                "warning: the search index was not refreshed (the finder exited with {status})"
+            ),
+            Err(e) => eprintln!("warning: the search index was not refreshed ({e})"),
         }
     }
 }
