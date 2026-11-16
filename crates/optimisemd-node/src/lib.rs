@@ -46,6 +46,21 @@ fn fail(e: optimisemd_core::StoreError) -> napi::Error {
     napi::Error::from_reason(e.to_string())
 }
 
+/// The default save date: local today, YYYY-MM-DD. It lives here so the plugin's tool has no date decision in JS.
+fn today() -> napi::Result<String> {
+    let out = std::process::Command::new("date")
+        .arg("+%F")
+        .output()
+        .map_err(|e| napi::Error::from_reason(format!("cannot read the local date: {e}")))?;
+    let day = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if day.is_empty() {
+        return Err(napi::Error::from_reason(
+            "the local date command returned nothing; refusing to save without a date",
+        ));
+    }
+    Ok(day)
+}
+
 #[napi]
 pub struct MemoryStore {
     inner: Store,
@@ -88,6 +103,9 @@ impl MemoryStore {
         agent_key: String,
         session: String,
     ) -> napi::Result<String> {
+        // The tool's defaults live here, in Rust: an omitted track/scope is the agent track for this workspace.
+        let track = if track.is_empty() { "agent".to_string() } else { track };
+        let scope = if scope.is_empty() { "workspace".to_string() } else { scope };
         self.inner
             .add(
                 &track,
@@ -233,6 +251,7 @@ impl RepoWriter {
         slug: Option<String>,
         detail: Option<String>,
     ) -> napi::Result<Written> {
+        let date = if date.is_empty() { today()? } else { date };
         let w = self
             .inner
             .save_checked(

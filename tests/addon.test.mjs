@@ -1,12 +1,12 @@
 // The addon is the whole mechanism: caps, unique-match, audit, snapshot visibility.
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { loadNative } from '../lib/native.mjs'
 
-const { MemoryStore } = loadNative()
+const { MemoryStore, RepoWriter } = loadNative()
 const fresh = () => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-optimisemd-'))
   return { store: new MemoryStore(join(dir, 'memory.db'), 2000, 4000), dir }
@@ -21,6 +21,40 @@ test('add, usage, snapshot and query round-trip', () => {
     assert.match(snap, /Tier-0 memory — user\/user-global 28\/2000/)
     assert.match(snap, /\[user\/user-global\]\n- Prefer small, plain answers\./)
     assert.deepEqual(store.query('plain', 5, 's1').map((e) => e.text), ['Prefer small, plain answers.'])
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }) } catch {}
+  }
+})
+
+test('the Rust addon supplies the tool defaults', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-optimisemd-default-'))
+  try {
+    const store = new MemoryStore(join(dir, 'memory.db'), 2000, 4000)
+    store.add('', '', 'A defaulted fact.', [], 'test', '/ws', '', 's1')
+    const hit = store.query('defaulted', 5, 's1')[0]
+    assert.equal(hit.track, 'agent')
+    assert.equal(hit.scope, 'workspace')
+
+    mkdirSync(join(dir, 'docs/memory-details'), { recursive: true })
+    mkdirSync(join(dir, 'scripts'), { recursive: true })
+    writeFileSync(
+      join(dir, 'MEMORY.md'),
+      '# MEMORY.md\n\n## Subject facts\n- **An existing row.** (2026-01-01) — `docs/memory-details/01.md`\n',
+    )
+    writeFileSync(join(dir, 'scripts/check-memory-index.sh'), '#!/usr/bin/env bash\nexit 0\n')
+    const written = new RepoWriter(dir).saveChecked(
+      'A saved fact.',
+      '',
+      'docs/memory-details/01.md',
+      null,
+      null,
+      null,
+      null,
+    )
+    const today = new Date()
+    const iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+    assert.equal(written.day, join(dir, 'memory', `${iso}.md`))
+    assert.ok(readFileSync(written.day, 'utf8').includes('A saved fact.'))
   } finally {
     try { rmSync(dir, { recursive: true, force: true }) } catch {}
   }
