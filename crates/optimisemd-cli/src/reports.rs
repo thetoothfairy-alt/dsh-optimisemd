@@ -122,6 +122,7 @@ fn clean_ask(txt: &str) -> String {
         "Your parent agent id is",
         "Delivery gate:",
         "Adversary review found:",
+        "The approval policy changed from",
     ] {
         if let Some(i) = cut.find(marker) {
             cut = &cut[..i];
@@ -690,7 +691,9 @@ pub fn session_digest(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
                             .and_then(|s| s.get("form"))
                             .and_then(|x| x.as_str())
                             .unwrap_or("");
-                        if kind == "dsh-doublecheck" || form == "notice" {
+                        if (!kind.is_empty() && kind != "user" && kind != "agent")
+                            || form == "notice"
+                        {
                             continue;
                         }
                         if let Some(blocks) = item.get("content").and_then(|c| c.as_array()) {
@@ -723,7 +726,7 @@ pub fn session_digest(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
                     .and_then(|s| s.get("form"))
                     .and_then(|x| x.as_str())
                     .unwrap_or("");
-                if kind == "dsh-doublecheck" || form == "notice" {
+                if (!kind.is_empty() && kind != "user" && kind != "agent") || form == "notice" {
                     continue;
                 }
                 if let Some(blocks) = v

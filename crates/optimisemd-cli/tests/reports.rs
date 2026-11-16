@@ -192,6 +192,58 @@ fn session_index_skips_a_malformed_transcript_beside_a_good_one() {
 }
 
 #[test]
+fn digest_skips_a_plugin_notice() {
+    let root = temp("digest-plugin");
+    let home = temp("digest-plugin-home");
+    let ws = ws_key(&root);
+    transcript(
+        &home.join("sessions").join(&ws).join("session-plugin"),
+        "{\"type\":\"session/title\",\"data\":{\"title\":\"A real session\"}}\n\
+         {\"type\":\"user/message\",\"data\":{\"source\":{\"kind\":\"plugin\"},\
+         \"content\":[{\"type\":\"text\",\"text\":\"The approval policy changed from \\\"ask\\\" to \\\"never\\\"\"}]}}\n\
+         {\"type\":\"user/message\",\"data\":{\"content\":[{\"type\":\"text\",\
+         \"text\":\"A real question about the approval policy and the rig\"}]}}\n",
+    );
+    let out = run(&root, &home, &["session-digest"]);
+    assert!(out.status.success());
+    let digest = fs::read_to_string(root.join("memory/logs/session-digest.md")).unwrap();
+    assert!(
+        digest.contains("A real question about the approval"),
+        "{digest}"
+    );
+    assert!(!digest.contains("The approval policy changed"), "{digest}");
+}
+
+#[test]
+fn slim_measures_characters_in_a_fixture_workspace() {
+    let root = temp("slim");
+    fs::create_dir_all(root.join("docs")).unwrap();
+    fs::create_dir_all(root.join("scripts")).unwrap();
+    fs::write(
+        root.join("scripts/check-context-files.sh"),
+        "#!/usr/bin/env bash\nBUDGETS_BLOCK=$(cat <<'BUDGETS'\n('AGENTS.md', 150, 20000)\nBUDGETS\n)\n",
+    )
+    .unwrap();
+    git(&root, &["init", "-q"]);
+    fs::write(root.join("AGENTS.md"), "a—b\n").unwrap();
+    git(&root, &["add", "-A"]);
+    git(&root, &["commit", "-q", "-m", "base"]);
+    fs::write(root.join("AGENTS.md"), "a—bc\n").unwrap();
+    let home = temp("slim-home");
+    let out = run(&root, &home, &["slim"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("cut in place"), "{stdout}");
+    let report = fs::read_to_string(root.join("docs/md-slimming-report.md")).unwrap();
+    assert!(report.contains("AGENTS.md"), "{report}");
+    assert!(report.contains("cut in place"), "{report}");
+}
+
+#[test]
 fn digest_reads_a_spliced_question_and_drops_a_spliced_notice() {
     let root = temp("digest-spliced");
     let home = temp("digest-spliced-home");
