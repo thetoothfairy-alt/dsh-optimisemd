@@ -631,7 +631,7 @@ pub fn session_digest(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
         let Some(text) = transcript_text(f) else {
             continue;
         };
-        let sid = f
+        let folder = f
             .parent()
             .and_then(|p| p.file_name())
             .map(|n| {
@@ -640,7 +640,11 @@ pub fn session_digest(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
                     .to_string()
             })
             .unwrap_or_default();
-        let sid = take(&sid, 8);
+        let sid = if folder.len() >= 8 && folder.chars().take(8).all(|c| c.is_ascii_hexdigit()) {
+            take(&folder, 8)
+        } else {
+            folder.clone()
+        };
         let mut title = String::new();
         let mut created: Option<i64> = None;
         let mut asks: Vec<String> = Vec::new();
@@ -668,6 +672,45 @@ pub fn session_digest(root: &Path) -> Result<i32, Box<dyn std::error::Error>> {
             {
                 if let Some(dt) = data_title {
                     title = dt.to_string();
+                }
+            }
+            if t == "agent/inbox/spliced" {
+                if let Some(items) = v
+                    .get("data")
+                    .and_then(|d| d.get("inserted"))
+                    .and_then(|x| x.as_array())
+                {
+                    for item in items {
+                        let source = item.get("source");
+                        let kind = source
+                            .and_then(|s| s.get("kind"))
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("");
+                        let form = source
+                            .and_then(|s| s.get("form"))
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("");
+                        if kind == "dsh-doublecheck" || form == "notice" {
+                            continue;
+                        }
+                        if let Some(blocks) = item.get("content").and_then(|c| c.as_array()) {
+                            for b in blocks {
+                                if b.get("type").and_then(|x| x.as_str()) != Some("text") {
+                                    continue;
+                                }
+                                let txt = b.get("text").and_then(|x| x.as_str()).unwrap_or("");
+                                if take(txt, 60).contains("memento") {
+                                    continue;
+                                }
+                                let cleaned = clean_ask(txt);
+                                let norm = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+                                if norm.chars().count() > 15 && !norm.starts_with("background job ")
+                                {
+                                    asks.push(take(&norm, 160));
+                                }
+                            }
+                        }
+                    }
                 }
             }
             if t == "user/message" {

@@ -192,6 +192,29 @@ fn session_index_skips_a_malformed_transcript_beside_a_good_one() {
 }
 
 #[test]
+fn digest_reads_a_spliced_question_and_drops_a_spliced_notice() {
+    let root = temp("digest-spliced");
+    let home = temp("digest-spliced-home");
+    let ws = ws_key(&root);
+    transcript(
+        &home.join("sessions").join(&ws).join("session-spliced"),
+        "{\"type\":\"agent/inbox/spliced\",\"data\":{\"inserted\":[\
+         {\"content\":[{\"type\":\"text\",\"text\":\"A spliced question about telegram messages and the builder\"}],\
+         \"source\":{\"kind\":\"agent\",\"form\":\"question\"}},\
+         {\"content\":[{\"type\":\"text\",\"text\":\"Red/green discipline: no failing test is on record\"}],\
+         \"source\":{\"kind\":\"dsh-doublecheck\",\"form\":\"notice\"}}]}}\n",
+    );
+    let out = run(&root, &home, &["session-digest"]);
+    assert!(out.status.success());
+    let digest = fs::read_to_string(root.join("memory/logs/session-digest.md")).unwrap();
+    assert!(
+        digest.contains("A spliced question about telegram"),
+        "{digest}"
+    );
+    assert!(!digest.contains("Red/green discipline"), "{digest}");
+}
+
+#[test]
 fn session_index_skips_a_json_transcript_with_no_session_event() {
     let root = temp("index-junk");
     fs::create_dir_all(root.join("docs")).unwrap();
