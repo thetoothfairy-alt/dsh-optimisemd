@@ -106,14 +106,20 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
     if !ok {
         optimisemd_core::write_atomic(&part, &part_before)?;
         optimisemd_core::write_atomic(&details, &details_before)?;
-        let out = check
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_default();
+        // Say WHY the guard failed: a rolled-back save whose message hides the cause sends the next
+        // session hunting blind.
+        let (why, out) = match &check {
+            Ok(o) => (
+                format!("exit {}", o.status),
+                String::from_utf8_lossy(&o.stdout).into_owned(),
+            ),
+            Err(e) => (format!("the guard could not run: {e}"), String::new()),
+        };
         for l in out.lines().filter(|l| l.contains("FAIL")).take(5) {
             eprintln!("{l}");
         }
         let _ = optimisemd_core::audit::record(root, "landmine", "rolled-back", &touched);
-        return Err("the context guard failed; both files were restored".into());
+        return Err(format!("the context guard failed ({why}); both files were restored").into());
     }
     let _ = optimisemd_core::audit::record(root, "landmine", "applied", &touched);
     println!("recorded §{slug} in docs/hard-won/{part_name}");
@@ -196,6 +202,9 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    // The success path runs a workspace shell script as its guard — a unix contract, like the
+    // chmod and symlink tests elsewhere. Windows CI runs the refusal paths above.
+    #[cfg(unix)]
     #[test]
     fn a_valid_landmine_lands_and_is_audited() {
         let dir = fixture("ok");
