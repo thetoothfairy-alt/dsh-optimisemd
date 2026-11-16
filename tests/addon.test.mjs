@@ -1,5 +1,5 @@
 // The addon is the whole mechanism: caps, unique-match, audit, snapshot visibility.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -55,6 +55,54 @@ test('the Rust addon supplies the tool defaults', () => {
     const iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
     assert.equal(written.day, join(dir, 'memory', `${iso}.md`))
     assert.ok(readFileSync(written.day, 'utf8').includes('A saved fact.'))
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }) } catch {}
+  }
+})
+
+test('a bad date command is refused before any write', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-optimisemd-baddate-'))
+  const bin = join(dir, 'bin')
+  try {
+    mkdirSync(bin, { recursive: true })
+    mkdirSync(join(dir, 'docs/memory-details'), { recursive: true })
+    mkdirSync(join(dir, 'scripts'), { recursive: true })
+    writeFileSync(
+      join(dir, 'MEMORY.md'),
+      '# MEMORY.md\n\n## Subject facts\n- **An existing row.** (2026-01-01) — `docs/memory-details/01.md`\n',
+    )
+    writeFileSync(join(dir, 'scripts/check-memory-index.sh'), '#!/usr/bin/env bash\nexit 0\n')
+    const before = readFileSync(join(dir, 'MEMORY.md'), 'utf8')
+    const oldPath = process.env.PATH
+    const stub = (body) => {
+      writeFileSync(join(bin, 'date'), `#!/usr/bin/env bash\n${body}\n`)
+      chmodSync(join(bin, 'date'), 0o755)
+    }
+    const attempt = (dateArg) => {
+      try {
+        new RepoWriter(dir).saveChecked('A fact.', dateArg, 'docs/memory-details/01.md', null, null, null, null)
+        return null
+      } catch (e) {
+        return String(e?.message ?? e)
+      }
+    }
+    try {
+      process.env.PATH = `${bin}:${oldPath}`
+      stub('echo 2026-11-16; exit 1')
+      assert.match(attempt(''), /date command failed/)
+      assert.equal(readFileSync(join(dir, 'MEMORY.md'), 'utf8'), before)
+      stub('echo garbage-date')
+      assert.match(attempt(''), /not YYYY-MM-DD/)
+      assert.equal(readFileSync(join(dir, 'MEMORY.md'), 'utf8'), before)
+      stub('true')
+      assert.match(attempt(''), /returned nothing/)
+      assert.equal(readFileSync(join(dir, 'MEMORY.md'), 'utf8'), before)
+    } finally {
+      process.env.PATH = oldPath
+    }
+    assert.match(attempt('garbage-date'), /date must be YYYY-MM-DD/)
+    assert.equal(readFileSync(join(dir, 'MEMORY.md'), 'utf8'), before)
+    assert.ok(!readFileSync(join(dir, 'MEMORY.md'), 'utf8').includes('A fact.'))
   } finally {
     try { rmSync(dir, { recursive: true, force: true }) } catch {}
   }

@@ -52,11 +52,22 @@ fn today() -> napi::Result<String> {
         .arg("+%F")
         .output()
         .map_err(|e| napi::Error::from_reason(format!("cannot read the local date: {e}")))?;
+    if !out.status.success() {
+        return Err(napi::Error::from_reason(format!(
+            "the local date command failed ({}); refusing to save without a date",
+            out.status
+        )));
+    }
     let day = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if day.is_empty() {
         return Err(napi::Error::from_reason(
             "the local date command returned nothing; refusing to save without a date",
         ));
+    }
+    if !optimisemd_core::repo::valid_date(&day) {
+        return Err(napi::Error::from_reason(format!(
+            "the local date command returned {day:?}, not YYYY-MM-DD; refusing to save without a date"
+        )));
     }
     Ok(day)
 }
@@ -104,8 +115,16 @@ impl MemoryStore {
         session: String,
     ) -> napi::Result<String> {
         // The tool's defaults live here, in Rust: an omitted track/scope is the agent track for this workspace.
-        let track = if track.is_empty() { "agent".to_string() } else { track };
-        let scope = if scope.is_empty() { "workspace".to_string() } else { scope };
+        let track = if track.is_empty() {
+            "agent".to_string()
+        } else {
+            track
+        };
+        let scope = if scope.is_empty() {
+            "workspace".to_string()
+        } else {
+            scope
+        };
         self.inner
             .add(
                 &track,
