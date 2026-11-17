@@ -128,6 +128,23 @@ impl Promoter {
     pub fn report(&self, days: u32) -> Result<Report, PromoError> {
         let body = self.read("MEMORY.md")?;
         let rows = parse_rows(&body);
+        // The "Detail sections — the long entries" table is an index too: a `| §slug | part |` row points at the
+        // section as surely as a bullet row does, so it must suppress a promote candidate. Until 0.4.13 only bullet
+        // rows counted, and the report called 11 of its 14 candidates "no row" while the table listed them.
+        let table: Vec<(String, String)> = body
+            .lines()
+            .filter_map(|line| {
+                let rest = line.trim_start().strip_prefix("| §")?;
+                let mut parts = rest.split('|');
+                let slug = parts.next()?.trim().to_string();
+                let file = parts
+                    .next()?
+                    .trim()
+                    .trim_matches('`')
+                    .to_string();
+                (!slug.is_empty() && !file.is_empty()).then_some((slug, file))
+            })
+            .collect();
         let today = day_number(&today_local()).unwrap_or(0);
         let demote: Vec<Row> = rows
             .iter()
@@ -153,7 +170,15 @@ impl Promoter {
                     let Some(slug) = line.strip_prefix("### §") else {
                         continue;
                     };
-                    let slug = slug.trim().to_string();
+                    // A heading may carry a description after the slug (`### §slug — why it matters`). The table
+                    // indexes the bare slug, and its words are the subject's: strip the description from both.
+                    let full = slug.trim().to_string();
+                    let slug = full
+                        .split(" — ")
+                        .next()
+                        .unwrap_or(&full)
+                        .trim()
+                        .to_string();
                     let words: Vec<String> = slug
                         .split(['-', '_', ' '])
                         .filter(|w| w.len() >= 4)
@@ -162,9 +187,11 @@ impl Promoter {
                     if words.len() < 2 {
                         continue;
                     }
+                    let part_rel = format!("docs/memory-details/{name}");
                     let in_index = rows
                         .iter()
-                        .any(|r| words.iter().all(|w| r.text.to_lowercase().contains(w)));
+                        .any(|r| words.iter().all(|w| r.text.to_lowercase().contains(w)))
+                        || table.iter().any(|(t, f)| *t == slug && *f == part_rel);
                     if in_index {
                         continue;
                     }
@@ -331,7 +358,7 @@ mod tests {
         fs::create_dir_all(dir.join("memory")).unwrap();
         fs::write(
             dir.join("docs/memory-details/01.md"),
-            "# Memory details — 01\n\n### §test-subject\n\nLong form.\n",
+            "# Memory details — 01\n\n### §test-subject — a longer note\n\nLong form.\n",
         )
         .unwrap();
         fs::write(
@@ -411,6 +438,30 @@ mod tests {
     }
 
     #[test]
+    fn a_detail_table_row_suppresses_the_promote_candidate() {
+        let dir = fixture("promote-table");
+        // The section's words are active in the window, so without a pointer it is a candidate.
+        fs::write(
+            dir.join("memory/2026-11-13.md"),
+            "# 2026-11-13\n\n- test subject work today\n",
+        )
+        .unwrap();
+        let r = Promoter::new(&dir).report(180).unwrap();
+        assert_eq!(r.promote.len(), 1, "no row: {:?}", r.promote);
+        assert_eq!(r.promote[0].slug, "test-subject");
+
+        // The detail table is part of the index: its row is the pointer, so the candidate disappears.
+        let mut body = fs::read_to_string(dir.join("MEMORY.md")).unwrap();
+        body.push_str(
+            "\n## Detail sections — the long entries\n\n| § | File |\n|---|---|\n| §test-subject | `docs/memory-details/01.md` |\n",
+        );
+        fs::write(dir.join("MEMORY.md"), body).unwrap();
+        let r = Promoter::new(&dir).report(180).unwrap();
+        assert!(r.promote.is_empty(), "table row is a pointer: {:?}", r.promote);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn only_the_quiet_detail_row_is_a_demote_candidate() {
         let dir = fixture("report");
         let r = Promoter::new(&dir).report(180).unwrap();
@@ -477,7 +528,7 @@ mod tests {
         fs::create_dir_all(dir.join("memory")).unwrap();
         fs::write(
             dir.join("docs/memory-details/01.md"),
-            "# Memory details — 01\n\n### §test-subject\n\nLong form.\n",
+            "# Memory details — 01\n\n### §test-subject — a longer note\n\nLong form.\n",
         )
         .unwrap();
         fs::write(
