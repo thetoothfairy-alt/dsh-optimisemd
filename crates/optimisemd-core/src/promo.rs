@@ -137,11 +137,7 @@ impl Promoter {
                 let rest = line.trim_start().strip_prefix("| §")?;
                 let mut parts = rest.split('|');
                 let slug = parts.next()?.trim().to_string();
-                let file = parts
-                    .next()?
-                    .trim()
-                    .trim_matches('`')
-                    .to_string();
+                let file = parts.next()?.trim().trim_matches('`').to_string();
                 (!slug.is_empty() && !file.is_empty()).then_some((slug, file))
             })
             .collect();
@@ -173,12 +169,7 @@ impl Promoter {
                     // A heading may carry a description after the slug (`### §slug — why it matters`). The table
                     // indexes the bare slug, and its words are the subject's: strip the description from both.
                     let full = slug.trim().to_string();
-                    let slug = full
-                        .split(" — ")
-                        .next()
-                        .unwrap_or(&full)
-                        .trim()
-                        .to_string();
+                    let slug = full.split(" — ").next().unwrap_or(&full).trim().to_string();
                     let words: Vec<String> = slug
                         .split(['-', '_', ' '])
                         .filter(|w| w.len() >= 4)
@@ -457,7 +448,11 @@ mod tests {
         );
         fs::write(dir.join("MEMORY.md"), body).unwrap();
         let r = Promoter::new(&dir).report(180).unwrap();
-        assert!(r.promote.is_empty(), "table row is a pointer: {:?}", r.promote);
+        assert!(
+            r.promote.is_empty(),
+            "table row is a pointer: {:?}",
+            r.promote
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
