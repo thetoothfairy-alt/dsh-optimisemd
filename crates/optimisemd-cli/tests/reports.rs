@@ -736,7 +736,10 @@ fn find_refuses_without_the_finder_binary() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("no dsh-belfind"));
 }
 
-// The historical-name dispatch runs through a symlink and a bash stub: a unix contract.
+// The historical-name dispatch runs through a symlink, a bash stub and exec permissions: a unix contract. The whole
+// test is gated, not just its assertions, so Windows compiles it out instead of counting a vacuous pass (the fifth
+// such test, named — the 0.4.12 record counts four and leaves this one unnamed).
+#[cfg(unix)]
 #[test]
 fn the_historical_wrapper_names_dispatch() {
     if !optimisemd_core::util::shell_available() {
