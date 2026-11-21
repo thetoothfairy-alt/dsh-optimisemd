@@ -10,6 +10,7 @@ mod counts;
 mod landmine;
 mod memindex;
 mod reports;
+mod self_repair;
 mod slim;
 
 #[derive(Parser)]
@@ -71,6 +72,12 @@ enum Cmd {
     SessionDigest,
     /// Rebuild docs/memory-log-index.md (the daily logs' topics).
     LogIndex,
+    /// Find stale reports and broken maintenance guards; --fix rebuilds the reports that are safe to rebuild.
+    SelfRepair {
+        /// Rebuild the stale reports instead of only reporting them.
+        #[arg(long)]
+        fix: bool,
+    },
     /// Record a landmine: one line in its part, its reproduction under §slug, the context guard as the gate.
     Landmine(LandmineArgs),
     /// Tier-0 maintenance, the replacement for memento-maintenance.sh: list, add, replace, remove, query, verify.
@@ -251,6 +258,7 @@ fn run(root: &Path, cmd: Cmd) -> Result<i32, Box<dyn std::error::Error>> {
         Cmd::SessionCommits { days } => reports::session_commits(root, &days.to_string()),
         Cmd::SessionDigest => reports::session_digest(root),
         Cmd::LogIndex => reports::memory_log_index(root),
+        Cmd::SelfRepair { fix } => self_repair::run(root, fix),
         Cmd::Landmine(a) => match a.cmd {
             LandmineCmd::Add {
                 part,

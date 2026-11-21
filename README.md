@@ -33,6 +33,7 @@ dsh-optimisemd session-index      # docs/session-index.md; --check fails when st
 dsh-optimisemd session-commits    # docs/session-commits.md over --days
 dsh-optimisemd session-digest     # memory/logs/session-digest.md
 dsh-optimisemd log-index          # docs/memory-log-index.md
+dsh-optimisemd self-repair        # find stale reports and broken guards; --fix rebuilds the reports
 dsh-optimisemd landmine add …     # one hard-won line + its reproduction, guard as the gate
 dsh-optimisemd check [paths…]     # the MEMORY.md index rules (the bash gate wraps this)
 ```

@@ -510,8 +510,9 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "optimisemd-cli"
-version = "0.4.13"
+version = "0.4.14"
 dependencies = [
+ "chrono",
  "clap",
  "optimisemd-core",
  "regex",
@@ -521,7 +522,7 @@ dependencies = [
 
 [[package]]
 name = "optimisemd-core"
-version = "0.4.13"
+version = "0.4.14"
 dependencies = [
  "chrono",
  "rusqlite",
@@ -533,7 +534,7 @@ dependencies = [
 
 [[package]]
 name = "optimisemd-node"
-version = "0.4.13"
+version = "0.4.14"
 dependencies = [
  "napi",
  "napi-build",
