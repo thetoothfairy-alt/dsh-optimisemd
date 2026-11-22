@@ -285,7 +285,11 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
     }
     index_after.push_str(&row);
     index_after.push('\n');
-    writes.push((details_index.clone(), index_after, Some(index_before.clone())));
+    writes.push((
+        details_index.clone(),
+        index_after,
+        Some(index_before.clone()),
+    ));
 
     // One transaction over every touched file: a landmine whose entry landed without its
     // reproduction (or the reverse) is a half-recorded trap.
