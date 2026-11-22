@@ -64,6 +64,7 @@ fn secret_corpus(root: &Path) -> Vec<String> {
         "docs/lessons",
         "docs/rules-evidence",
         "docs/hard-won",
+        "docs/hard-won-details",
     ] {
         if let Ok(rd) = fs::read_dir(root.join(dir)) {
             for e in rd.flatten() {

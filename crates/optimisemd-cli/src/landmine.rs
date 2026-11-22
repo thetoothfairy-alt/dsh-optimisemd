@@ -1,6 +1,7 @@
 //! Landmine creation: the one writing path that used to be a hand-run skill. It appends the trap line to its part, writes the
-//! reproduction under `### §<slug>` in `docs/hard-won-details.md`, and runs the context guard as its gate — rolling both files
-//! back when the guard fails, the same shape as `memory_save`'s checks gate.
+//! reproduction under `### §<slug>` in `docs/hard-won-details/<part>.md` with its slug row in the `docs/hard-won-details.md`
+//! index, and runs the context guard as its gate — rolling every touched file back when the guard fails, the same shape as
+//! `memory_save`'s checks gate.
 
 use std::error::Error;
 use std::fs;
@@ -80,6 +81,50 @@ fn continuation(part_name: &str, dir: &Path) -> Option<String> {
     Some(format!("{:02}-{}-{}.md", maxn + 1, base, maxk + 1))
 }
 
+/// The length of the `§` slug at the start of `s`: letters, digits, dashes, underscores and dots,
+/// the same shape the guard's rule 15 reads. Exact addresses only — `§a-slug` must not claim `§a-slug-2`.
+fn slug_end(s: &str) -> usize {
+    s.find(|c: char| {
+        !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_' || c == '.')
+    })
+    .unwrap_or(s.len())
+}
+
+/// The `§` address a heading carries, if any: `#{2,} §slug`, with or without a description after it.
+fn heading_slug(line: &str) -> Option<&str> {
+    let t = line.trim_start();
+    let hashes = t.chars().take_while(|c| *c == '#').count();
+    if hashes < 2 {
+        return None;
+    }
+    let rest = t[hashes..].trim_start().strip_prefix('§')?;
+    Some(&rest[..slug_end(rest)])
+}
+
+/// Whether any details file already holds a reproduction section for this exact slug.
+fn section_recorded(dir: &Path, slug: &str) -> bool {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return false;
+    };
+    rd.flatten().any(|e| {
+        let p = dir.join(e.file_name());
+        p.extension().map(|x| x == "md").unwrap_or(false)
+            && fs::read_to_string(&p)
+                .unwrap_or_default()
+                .lines()
+                .any(|l| heading_slug(l) == Some(slug))
+    })
+}
+
+/// Whether an index row already points at this exact slug (`| §slug | \`file\` |`).
+fn row_is_for(line: &str, slug: &str) -> bool {
+    let Some(rest) = line.trim_start().strip_prefix("| §") else {
+        return false;
+    };
+    let end = slug_end(rest);
+    rest[..end] == *slug && rest[end..].starts_with(" |")
+}
+
 pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
     let part_name = a.part.trim();
     if !part_ok(part_name) {
@@ -90,12 +135,13 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
         .into());
     }
     let part = root.join("docs/hard-won").join(part_name);
-    let details = root.join("docs/hard-won-details.md");
+    let details_dir = root.join("docs/hard-won-details");
+    let details_index = root.join("docs/hard-won-details.md");
     if !part.exists() {
         return Err(format!("no such part: {}", part.display()).into());
     }
-    if !details.exists() {
-        return Err("docs/hard-won-details.md is missing".into());
+    if !details_index.exists() {
+        return Err("docs/hard-won-details.md (the slug index) is missing".into());
     }
     let slug = a.slug.trim();
     if slug.is_empty()
@@ -122,10 +168,12 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
         .into());
     }
     let part_before = fs::read_to_string(&part)?;
-    let details_before = fs::read_to_string(&details)?;
+    let index_before = fs::read_to_string(&details_index)?;
     // The slug is unique across the whole store: a second `§` address anywhere is a duplicate
     // whichever part the line lives in. Exact addresses only — `§a-slug` must not claim `§a-slug-2`.
-    let dup = details_before.lines().any(|l| l == format!("### §{slug}"))
+    // A hand-deleted index row opens no door: the reproduction section itself is the record.
+    let dup = section_recorded(&details_dir, slug)
+        || index_before.lines().any(|l| row_is_for(l, slug))
         || fs::read_dir(root.join("docs/hard-won"))
             .map(|rd| {
                 rd.flatten().any(|e| {
@@ -146,6 +194,8 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
     let mut writes: Vec<(std::path::PathBuf, String, Option<String>)> = Vec::new();
     let target_rel = format!("docs/hard-won/{part_name}");
     let mut created: Option<String> = None;
+    // The part file the line lands in — the reproduction gets the details file named after it.
+    let mut landed = part_name.to_string();
 
     let budget = crate::slim::budget_for(
         &fs::read_to_string(root.join("scripts/check-context-files.sh")).unwrap_or_default(),
@@ -200,6 +250,7 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
             format!("# Landmines — {desc}\n\n{line}\n"),
             None,
         ));
+        landed = next.clone();
         created = Some(next);
     } else {
         let mut part_after = part_before.clone();
@@ -211,12 +262,30 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
         writes.push((part.clone(), part_after, Some(part_before.clone())));
     }
 
-    let mut details_after = details_before.clone();
+    // The reproduction lives beside its line: one details file per part, named after the part, and
+    // the old single file stays as the slug index so every citation of it keeps landing somewhere.
+    let details_file = details_dir.join(&landed);
+    let details_file_before = fs::read_to_string(&details_file).ok();
+    let mut details_after = details_file_before.clone().unwrap_or_default();
+    if details_file_before.is_none() {
+        details_after.push_str(&format!(
+            "# Hard-won details — the long entries behind the lines in docs/hard-won/{landed}\n"
+        ));
+    }
     if !details_after.ends_with('\n') {
         details_after.push('\n');
     }
     details_after.push_str(&format!("\n### §{}\n\n{}\n", slug, a.detail.trim()));
-    writes.push((details.clone(), details_after, Some(details_before.clone())));
+    writes.push((details_file, details_after, details_file_before));
+    // One index row per slug names the file that carries the section.
+    let row = format!("| §{} | `docs/hard-won-details/{}` |", slug, landed);
+    let mut index_after = index_before.clone();
+    if !index_after.ends_with('\n') {
+        index_after.push('\n');
+    }
+    index_after.push_str(&row);
+    index_after.push('\n');
+    writes.push((details_index.clone(), index_after, Some(index_before.clone())));
 
     // One transaction over every touched file: a landmine whose entry landed without its
     // reproduction (or the reverse) is a half-recorded trap.
@@ -294,9 +363,15 @@ mod tests {
         fs::create_dir_all(dir.join("docs/hard-won")).unwrap();
         fs::create_dir_all(dir.join("scripts")).unwrap();
         fs::write(dir.join("docs/hard-won/01.md"), "# Traps\n").unwrap();
+        fs::create_dir_all(dir.join("docs/hard-won-details")).unwrap();
         fs::write(
             dir.join("docs/hard-won-details.md"),
-            "# Landmine details\n\n### §taken-slug\n\nAlready recorded.\n",
+            "# Landmine details — the index\n\n| §slug | reproduction |\n|---|---|\n| §taken-slug | `docs/hard-won-details/01.md` |\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("docs/hard-won-details/01.md"),
+            "# Details — 01\n\n### §taken-slug\n\nAlready recorded.\n",
         )
         .unwrap();
         fs::write(dir.join("MEMORY.md"), "# MEMORY.md\n").unwrap();
@@ -350,11 +425,19 @@ mod tests {
     #[test]
     fn a_slug_is_unique_across_the_details_too() {
         let dir = fixture("dupe");
-        // §taken-slug lives in docs/hard-won-details.md but not in the part: adding it again would
-        // create a second `### §taken-slug` heading in the details.
+        // §taken-slug has a reproduction in docs/hard-won-details/01.md but no line in the part:
+        // adding it again would create a second `### §taken-slug` heading in the details family.
         assert!(add(&dir, args("01.md", "A trap.", "taken-slug")).is_err());
-        let details = fs::read_to_string(dir.join("docs/hard-won-details.md")).unwrap();
+        let details = fs::read_to_string(dir.join("docs/hard-won-details/01.md")).unwrap();
         assert_eq!(details.matches("### §taken-slug").count(), 1);
+        // A hand-deleted index row must not open the door either: the section itself is the record.
+        let index = fs::read_to_string(dir.join("docs/hard-won-details.md")).unwrap();
+        fs::write(
+            dir.join("docs/hard-won-details.md"),
+            index.replace("| §taken-slug | `docs/hard-won-details/01.md` |", ""),
+        )
+        .unwrap();
+        assert!(add(&dir, args("01.md", "A trap.", "taken-slug")).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -373,6 +456,23 @@ mod tests {
         assert!(fs::read_to_string(dir.join("docs/hard-won/01.md"))
             .unwrap()
             .contains("§fresh-slug"));
+        // The reproduction lives in the details file for its part, and the index names it — the
+        // index is a map, never a second copy of the text.
+        assert!(
+            fs::read_to_string(dir.join("docs/hard-won-details/01.md"))
+                .unwrap()
+                .contains("### §fresh-slug"),
+            "the reproduction lands in docs/hard-won-details/01.md"
+        );
+        let map = fs::read_to_string(dir.join("docs/hard-won-details.md")).unwrap();
+        assert!(
+            map.contains("| §fresh-slug | `docs/hard-won-details/01.md` |"),
+            "{map}"
+        );
+        assert!(
+            !map.contains("the reproduction"),
+            "the reproduction body must not be copied into the index"
+        );
         assert!(fs::read_to_string(dir.join("memory/logs/repo-writes.log"))
             .unwrap()
             .contains("landmine applied"));
@@ -426,6 +526,17 @@ mod tests {
                 .unwrap()
                 .contains("§fresh-slug"),
             "the landmine lands in the continuation part"
+        );
+        assert!(
+            fs::read_to_string(dir.join("docs/hard-won-details/02-claims-2.md"))
+                .unwrap()
+                .contains("### §fresh-slug"),
+            "the reproduction follows the line into the continuation's details file"
+        );
+        let map = fs::read_to_string(dir.join("docs/hard-won-details.md")).unwrap();
+        assert!(
+            map.contains("| §fresh-slug | `docs/hard-won-details/02-claims-2.md` |"),
+            "{map}"
         );
         let index = fs::read_to_string(dir.join("docs/hard-won.md")).unwrap();
         assert!(
