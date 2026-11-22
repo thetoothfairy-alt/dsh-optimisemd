@@ -2,7 +2,7 @@
 //! a wrapper over this so the commit hook, the save gate and a hand run all share one implementation.
 
 use regex::Regex;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs;
 use std::path::Path;
@@ -42,6 +42,139 @@ pub(crate) fn fact_parts(line: &str) -> Option<(String, Option<String>)> {
     Some((text, Some(date)))
 }
 
+/// The belief files and the diary a credential must never reach. The scan is deliberately narrow:
+/// it fires on credential-shaped values only, so prose, commit hashes and `op://` fetch references
+/// pass untouched.
+fn secret_corpus(root: &Path) -> Vec<String> {
+    let mut files: Vec<String> = [
+        "MEMORY.md",
+        "USER.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "docs/RULES.md",
+        "docs/hard-won.md",
+        "docs/hard-won-details.md",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    for dir in [
+        "docs/memory-details",
+        "docs/runbooks",
+        "docs/lessons",
+        "docs/rules-evidence",
+        "docs/hard-won",
+    ] {
+        if let Ok(rd) = fs::read_dir(root.join(dir)) {
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().to_string();
+                if n.ends_with(".md") {
+                    files.push(format!("{dir}/{n}"));
+                }
+            }
+        }
+    }
+    if let Ok(rd) = fs::read_dir(root.join("skills")) {
+        for e in rd.flatten() {
+            let skill = root.join("skills").join(e.file_name()).join("SKILL.md");
+            if skill.is_file() {
+                files.push(format!(
+                    "skills/{}/SKILL.md",
+                    e.file_name().to_string_lossy()
+                ));
+            }
+        }
+    }
+    // The diary too: a secret pasted into today's line is still a secret in the repo. Only dated
+    // files — logs/ and baselines/ stay out of the scan (docs/memory-process.md §2).
+    if let Ok(rd) = fs::read_dir(root.join("memory")) {
+        let day_re = Regex::new(r"^\d{4}-\d{2}-\d{2}\.md$").unwrap();
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().to_string();
+            if day_re.is_match(&n) {
+                files.push(format!("memory/{n}"));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// A credential-looking value in a file is a finding naming the file, the line and the key it sits
+/// under — never the value itself, because a secret printed is a secret leaked again.
+fn secret_findings(root: &Path) -> Vec<String> {
+    // Declared, not hidden (the pattern of scripts/check-md-contracts.sh): a `file:line` address in
+    // docs/secret-scan-baseline.txt (tracked, so the declaration travels with the repo) is a
+    // historical value recorded before this scan existed, at a line the append-only diary cannot be
+    // edited at. The credential behind it is rotated; the declaration keeps the gate green for new
+    // work without hiding the past.
+    let mut allowed: HashSet<String> = HashSet::new();
+    if let Ok(text) = fs::read_to_string(root.join("docs/secret-scan-baseline.txt")) {
+        for l in text.lines() {
+            let l = l.trim();
+            if !l.is_empty() && !l.starts_with('#') {
+                allowed.insert(l.to_string());
+            }
+        }
+    }
+    let key_re = Regex::new(
+        r#"(?:^|[^A-Za-z])(?i)(api[_-]?key|apikey|secret|passwd|password|token)["']?\s*[:=]\s*["']?([A-Za-z0-9+/_\-.=]{16,})"#,
+    )
+    .unwrap();
+    let sk_re = Regex::new(r"(?:^|[^A-Za-z0-9_-])(sk-[A-Za-z0-9]{20,})").unwrap();
+    let pem_re = Regex::new(r"-----BEGIN [A-Z ]*PRIVATE KEY").unwrap();
+    let placeholder = |v: &str| -> bool {
+        let v = v.to_lowercase();
+        v.starts_with('<')
+            || v.starts_with("${")
+            || v.starts_with("$(")
+            || v.starts_with("{{")
+            || v.starts_with("op://")
+            || v.starts_with("0x")
+            || v.contains("example")
+            || v.contains("xxxx")
+            || v.contains("redacted")
+            || v.contains("placeholder")
+            || matches!(
+                v.as_str(),
+                "local" | "none" | "null" | "dummy" | "changeme" | "notasecret"
+            )
+    };
+    let mut out = Vec::new();
+    for path in secret_corpus(root) {
+        let Ok(text) = fs::read_to_string(root.join(&path)) else {
+            continue;
+        };
+        for (i, line) in text.lines().enumerate() {
+            let i = i + 1;
+            if allowed.contains(&format!("{path}:{i}")) {
+                continue;
+            }
+            if pem_re.is_match(line) {
+                out.push(format!(
+                    "{path}:{i}: a private key block — secrets are fetched from 1Password (docs/credentials.md), never stored"
+                ));
+                continue;
+            }
+            if sk_re.is_match(line) {
+                out.push(format!(
+                    "{path}:{i}: an API-key-shaped token — secrets are fetched from 1Password (docs/credentials.md), never stored"
+                ));
+                continue;
+            }
+            for caps in key_re.captures_iter(line) {
+                if !placeholder(&caps[2]) {
+                    out.push(format!(
+                        "{path}:{i}: a credential-looking value assigned to `{}` — secrets are fetched from 1Password (docs/credentials.md), never stored",
+                        &caps[1]
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
 pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
     let mut targets = targets;
     if targets.is_empty() {
@@ -64,6 +197,7 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
     let mut rows_per_target: Vec<(String, usize)> = Vec::new();
     let mut detail_rows = 0usize;
     let mut pointed: HashSet<String> = HashSet::new();
+    let mut target_texts: HashMap<String, String> = HashMap::new();
 
     for target in &targets {
         // A check that cannot read its input must fail, not claim zero findings: an unreadable or
@@ -94,8 +228,10 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
                     findings.push(format!("{target}:{i}: a fact row outside a subject section — put it under a `##` heading, above the detail table"));
                 }
                 let path = caps[1].to_string();
+                let parsed = fact_parts(line);
+                let fact_text = parsed.as_ref().map(|(f, _)| f.clone()).unwrap_or_default();
                 // The cap counts the FACT text; the date and the pointer sit outside it, as documented.
-                match fact_parts(line) {
+                match parsed {
                     Some((fact, Some(date))) => {
                         if fact.chars().count() > MAX {
                             findings.push(format!("{target}:{i}: row text is {} chars, cap {MAX} — split the fact or move detail out", fact.chars().count()));
@@ -125,6 +261,21 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
                         || path.starts_with("docs/hard-won/");
                     if !family {
                         findings.push(format!("{target}:{i}: a fact row hops to {path} — point it at a docs/memory-details/ part, its runbook, a skill, or docs/hard-won.md (docs/runbooks/memory.md)"));
+                    }
+                    // A row can be perfectly shaped and still describe something that changed: no
+                    // other rule reads the file the row points at. Two or more distinctive words and
+                    // not one of them in the target text is the staleness signal (calibrated
+                    // 2026-11-22 against the real index).
+                    let words = words_of(&fact_text);
+                    if words.len() >= 2 {
+                        let tgt = target_texts.entry(path.clone()).or_insert_with(|| {
+                            fs::read_to_string(root.join(&path))
+                                .unwrap_or_default()
+                                .to_lowercase()
+                        });
+                        if !words.iter().any(|w| tgt.contains(w.as_str())) {
+                            findings.push(format!("{target}:{i}: no distinctive word of the row appears in {path} — the row may describe something that has changed; verify the fact still holds, then refresh the row or its pointer"));
+                        }
                     }
                 }
                 continue;
@@ -244,6 +395,10 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
             }
         }
     }
+
+    // The last rule: a credential-shaped value anywhere in the belief corpus or the diary. The
+    // save gate runs this check after every write, so a secret that lands here is refused at once.
+    findings.extend(secret_findings(root));
 
     for f in &findings {
         println!("{f}");
@@ -399,6 +554,16 @@ mod tests {
         // different things. Four shared distinctive words are the cross-pointer bar.
         let dir = fixture("generic");
         fs::write(
+            dir.join("docs/hard-won.md"),
+            "# Landmines\n\nwhatsapp gateway disabled linked session\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("docs/runbooks/memory.md"),
+            "# runbook\n\nclaude answers whatsapp gateway plugin\n",
+        )
+        .unwrap();
+        fs::write(
             dir.join("MEMORY.md"),
             "# MEMORY.md\n\n## Subject facts\n\
              - **The VPS copy of the WhatsApp gateway is disabled and cannot steal the linked session.** (2026-01-01) — `docs/hard-won.md`\n\
@@ -406,6 +571,105 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out(run(&dir, vec![])), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_row_whose_subject_words_left_their_file_is_a_finding() {
+        let dir = fixture("stale");
+        fs::write(
+            dir.join("MEMORY.md"),
+            "# MEMORY.md\n\n## Subject facts\n\
+             - **The settlement runbook moved to the invoices route.** (2026-01-01) — `docs/hard-won.md`\n",
+        )
+        .unwrap();
+        // Shaped right, but no word of the row survives in the file it points at.
+        assert_eq!(
+            out(run(&dir, vec![])),
+            1,
+            "a row with no distinctive word in its file is stale"
+        );
+        fs::write(
+            dir.join("docs/hard-won.md"),
+            "# Landmines\n\nThe settlement invoices runbook survives.\n",
+        )
+        .unwrap();
+        assert_eq!(
+            out(run(&dir, vec![])),
+            0,
+            "the same row passes once its subject is back in the file"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_credential_value_is_a_finding_and_never_printed() {
+        let dir = fixture("secret");
+        let fake = "sk-FAKE1234567890abcdefghij";
+        fs::write(
+            dir.join("docs/hard-won.md"),
+            format!("# Landmines\n\nThe api_key = \"{fake}\"\n"),
+        )
+        .unwrap();
+        fs::create_dir_all(dir.join("memory")).unwrap();
+        fs::write(
+            dir.join("memory/2026-01-01.md"),
+            format!("## event\npassword: {fake}\n"),
+        )
+        .unwrap();
+        let found = secret_findings(&dir);
+        assert!(
+            !found.is_empty(),
+            "a credential-shaped value in a belief file and in the diary is a finding"
+        );
+        for f in &found {
+            assert!(
+                !f.contains(fake),
+                "the finding names the file, the line and the key — never the value"
+            );
+        }
+        fs::write(
+            dir.join("docs/hard-won.md"),
+            "# Landmines\n\napi_key: \"local\"\n\ntoken = xxxx-xxxx-xxxx-redacted\n\nRequestVerificationToken: document.querySelector('input')\n",
+        )
+        .unwrap();
+        fs::remove_file(dir.join("memory/2026-01-01.md")).unwrap();
+        assert!(
+            secret_findings(&dir).is_empty(),
+            "placeholders, short values and code that merely names a token pass"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_declared_address_is_skipped_not_hidden() {
+        let dir = fixture("baseline");
+        let fake = "sk-FAKE1234567890abcdefghij";
+        fs::create_dir_all(dir.join("memory/logs")).unwrap();
+        fs::write(
+            dir.join("memory/2026-01-01.md"),
+            format!("## event\npassword: {fake}\n"),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("docs/secret-scan-baseline.txt"),
+            "# declared\nmemory/2026-01-01.md:2\n",
+        )
+        .unwrap();
+        assert!(
+            secret_findings(&dir).is_empty(),
+            "a declared file:line address is skipped"
+        );
+        fs::write(
+            dir.join("docs/secret-scan-baseline.txt"),
+            "# nothing declared\n",
+        )
+        .unwrap();
+        assert_eq!(
+            secret_findings(&dir).len(),
+            1,
+            "the same line is a finding again without its declaration"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

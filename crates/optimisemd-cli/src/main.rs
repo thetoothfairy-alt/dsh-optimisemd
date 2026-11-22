@@ -613,7 +613,7 @@ fn verify(
         println!("{f}");
     }
     println!(
-        "memento: {} entries · 2 track/scope pairs · findings {}",
+        "tier-0: {} entries · 2 track/scope pairs · findings {}",
         entries.len(),
         findings.len()
     );
