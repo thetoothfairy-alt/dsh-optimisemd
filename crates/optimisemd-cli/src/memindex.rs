@@ -516,7 +516,11 @@ mod tests {
             "an entry nothing points at is a lost lesson and must fail the gate"
         );
         fs::write(dir.join("docs/lesson-details.md"), rows(true)).unwrap();
-        assert_eq!(out(run(&dir, vec![])), 0, "with both rows the store is consistent");
+        assert_eq!(
+            out(run(&dir, vec![])),
+            0,
+            "with both rows the store is consistent"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

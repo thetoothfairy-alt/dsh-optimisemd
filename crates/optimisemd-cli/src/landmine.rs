@@ -144,7 +144,7 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
 
     // (path, content after, content before — None when this call creates the file)
     let mut writes: Vec<(std::path::PathBuf, String, Option<String>)> = Vec::new();
-    let mut target_rel = format!("docs/hard-won/{part_name}");
+    let target_rel = format!("docs/hard-won/{part_name}");
     let mut created: Option<String> = None;
 
     let budget = crate::slim::budget_for(
@@ -158,8 +158,9 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
         let index_before = fs::read_to_string(&index).map_err(|_| {
             "docs/hard-won.md is missing — the parts table is what keeps a rotation findable"
         })?;
-        let next = continuation(part_name, &root.join("docs/hard-won"))
-            .ok_or("this part's name carries no NN-subject number, so the next part cannot be named")?;
+        let next = continuation(part_name, &root.join("docs/hard-won")).ok_or(
+            "this part's name carries no NN-subject number, so the next part cannot be named",
+        )?;
         let marker = format!("| `docs/hard-won/{part_name}` |");
         let mut at = None;
         let mut desc = String::new();
@@ -182,7 +183,8 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
             .map(|(_, d)| d.to_string())
             .unwrap_or(desc);
         let num = part_name.split('-').next().unwrap_or("");
-        let row = format!("| `docs/hard-won/{next}` | continues {num} (closed at budget): {desc} |");
+        let row =
+            format!("| `docs/hard-won/{next}` | continues {num} (closed at budget): {desc} |");
         let mut index_after = String::new();
         for (i, l) in index_before.lines().enumerate() {
             index_after.push_str(l);
@@ -198,7 +200,6 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
             format!("# Landmines — {desc}\n\n{line}\n"),
             None,
         ));
-        target_rel = format!("docs/hard-won/{next}");
         created = Some(next);
     } else {
         let mut part_after = part_before.clone();

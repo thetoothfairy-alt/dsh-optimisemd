@@ -99,10 +99,7 @@ pub(crate) fn budget_for(guard: &str, rel: &str) -> Option<(u64, u64)> {
     for (p, l, c) in &rows {
         if let Some((dir, file_pat)) = p.rsplit_once('/') {
             let (pre, suf) = file_pat.split_once('*').unwrap_or(("", ""));
-            if rel.starts_with(&format!("{dir}/"))
-                && name.starts_with(pre)
-                && name.ends_with(suf)
-            {
+            if rel.starts_with(&format!("{dir}/")) && name.starts_with(pre) && name.ends_with(suf) {
                 return Some((*l, *c));
             }
         }

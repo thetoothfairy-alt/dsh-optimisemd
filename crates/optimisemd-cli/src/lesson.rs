@@ -186,10 +186,10 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
 
     // (absolute path, content after, content before — None when the file is created by this call)
     let mut writes: Vec<(std::path::PathBuf, String, Option<String>)> = Vec::new();
-    let mut target_rel = String::new();
+    let target_rel: String;
 
-    let mut part_after = String::new();
-    let mut part_path = std::path::PathBuf::new();
+    let part_after: String;
+    let part_path: std::path::PathBuf;
     let mut created = false;
     if let Some((_, last)) = parts.last() {
         let before = fs::read_to_string(lessons.join(last))?;
@@ -213,7 +213,7 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
         }
     } else {
         let name = next_part_name(root, 1);
-        part_after = format!(
+        part_after = String::from(
             "# Lesson details — entries 1 onward\n\nPart of the detail behind `lesson-details.md`; the `§slug` pointers there land in this file.\n\n---\n"
         ) + &entry;
         part_path = lessons.join(&name);
@@ -267,13 +267,20 @@ pub fn add(root: &Path, a: AddArgs) -> Result<i32, Box<dyn Error>> {
         .collect();
     let mut ok = true;
     let mut why = String::new();
-    for script in ["scripts/check-context-files.sh", "scripts/check-memory-index.sh"] {
+    for script in [
+        "scripts/check-context-files.sh",
+        "scripts/check-memory-index.sh",
+    ] {
         match optimisemd_core::util::run_script(&root.join(script), root) {
             Ok(o) if o.status.success() => {}
             Ok(o) => {
                 ok = false;
                 why = format!("{script} exited {}", o.status);
-                for l in String::from_utf8_lossy(&o.stdout).lines().filter(|l| l.contains("FAIL")).take(5) {
+                for l in String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .filter(|l| l.contains("FAIL"))
+                    .take(5)
+                {
                     eprintln!("{l}");
                 }
             }
@@ -407,18 +414,27 @@ mod tests {
     #[test]
     fn a_derived_slug_never_loses_the_save_and_an_explicit_one_must_be_free() {
         let dir = fixture("slug");
-        let mut a = args("A lesson worth keeping", "The story.");
+        let a = args("A lesson worth keeping", "The story.");
         assert_eq!(add(&dir, a).unwrap(), 0);
         // The same explicit slug is refused; the same title again still lands, under a suffixed address.
         let mut b = args("A lesson worth keeping", "The story again.");
         b.slug = Some("a-lesson-worth-keeping-0923-r1");
-        assert!(add(&dir, b).is_err(), "an explicit slug that is taken is refused");
+        assert!(
+            add(&dir, b).is_err(),
+            "an explicit slug that is taken is refused"
+        );
         let mut c = args("A lesson worth keeping", "The story again.");
         c.ref_tag = None;
         assert_eq!(add(&dir, c).unwrap(), 0);
         let index = fs::read_to_string(dir.join("docs/lesson-details.md")).unwrap();
-        assert!(index.contains("| §a-lesson-worth-keeping-0923-r1 |"), "{index}");
-        assert!(index.contains("| §a-lesson-worth-keeping-0923 |"), "{index}");
+        assert!(
+            index.contains("| §a-lesson-worth-keeping-0923-r1 |"),
+            "{index}"
+        );
+        assert!(
+            index.contains("| §a-lesson-worth-keeping-0923 |"),
+            "{index}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -448,17 +464,30 @@ mod tests {
         assert_eq!(add(&dir, a).unwrap(), 0);
         let before_close =
             fs::read_to_string(dir.join("docs/lessons/01-lessons-1-onward.md")).unwrap();
-        let mut b = args("Second lesson", "Another story that crosses the part budget.");
+        let mut b = args(
+            "Second lesson",
+            "Another story that crosses the part budget.",
+        );
         b.ref_tag = None;
-        assert_eq!(add(&dir, b).unwrap(), 0, "the second save must land, not be refused");
+        assert_eq!(
+            add(&dir, b).unwrap(),
+            0,
+            "the second save must land, not be refused"
+        );
         assert_eq!(
             fs::read_to_string(dir.join("docs/lessons/01-lessons-1-onward.md")).unwrap(),
             before_close,
             "the closed part stays byte-for-byte"
         );
         let index = fs::read_to_string(dir.join("docs/lesson-details.md")).unwrap();
-        assert!(index.contains("| §second-lesson-0923 | `docs/lessons/02-lessons-2-onward.md` |"), "{index}");
-        assert!(index.contains("| §first-lesson-0923 | `docs/lessons/01-lessons-1-onward.md` |"), "{index}");
+        assert!(
+            index.contains("| §second-lesson-0923 | `docs/lessons/02-lessons-2-onward.md` |"),
+            "{index}"
+        );
+        assert!(
+            index.contains("| §first-lesson-0923 | `docs/lessons/01-lessons-1-onward.md` |"),
+            "{index}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
