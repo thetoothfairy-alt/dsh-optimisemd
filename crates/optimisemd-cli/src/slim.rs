@@ -87,6 +87,50 @@ fn read_budgets(guard: &str) -> Result<Vec<Budget>, Box<dyn Error>> {
     Ok(out)
 }
 
+/// The budget of one file from the one budget home: an explicit row wins over its family row
+/// ('dir/*.md'), the same precedence the context checker enforces, so the writer and the gate can
+/// never disagree about when a part is full.
+pub(crate) fn budget_for(guard: &str, rel: &str) -> Option<(u64, u64)> {
+    let rows = read_budgets(guard).ok()?;
+    if let Some((_, l, c)) = rows.iter().find(|(p, _, _)| p == rel) {
+        return Some((*l, *c));
+    }
+    let name = rel.rsplit_once('/').map(|(_, n)| n).unwrap_or(rel);
+    for (p, l, c) in &rows {
+        if let Some((dir, file_pat)) = p.rsplit_once('/') {
+            let (pre, suf) = file_pat.split_once('*').unwrap_or(("", ""));
+            if rel.starts_with(&format!("{dir}/"))
+                && name.starts_with(pre)
+                && name.ends_with(suf)
+            {
+                return Some((*l, *c));
+            }
+        }
+    }
+    None
+}
+
+/// Would appending `add` to `before` cross the budget? Counted exactly the way the context checker
+/// counts (split on '\n', lines = entries-1, chars = Σ(len+1)), so a part the writer rotates is
+/// never one the gate would have refused.
+pub(crate) fn crosses_budget(before: &str, add: &str, budget: Option<(u64, u64)>) -> bool {
+    let Some((maxl, maxc)) = budget else {
+        return false;
+    };
+    let mut t = before.to_string();
+    if !t.ends_with('\n') {
+        t.push('\n');
+    }
+    t.push_str(add);
+    if !t.ends_with('\n') {
+        t.push('\n');
+    }
+    let ls: Vec<&str> = t.split('\n').collect();
+    let n = ls.len().saturating_sub(1) as u64;
+    let c: u64 = ls.iter().map(|l| l.chars().count() as u64 + 1).sum();
+    n > maxl || c > maxc
+}
+
 fn char_count(path: &Path) -> Result<u64, Box<dyn Error>> {
     Ok(fs::read_to_string(path)?.chars().count() as u64)
 }

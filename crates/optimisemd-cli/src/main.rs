@@ -8,6 +8,7 @@ use std::process::Command;
 
 mod counts;
 mod landmine;
+mod lesson;
 mod memindex;
 mod reports;
 mod self_repair;
@@ -80,6 +81,8 @@ enum Cmd {
     },
     /// Record a landmine: one line in its part, its reproduction under §slug, the context guard as the gate.
     Landmine(LandmineArgs),
+    /// Record a lesson: the entry in its part, its §slug row in the lessons index, both gates inside.
+    Lesson(LessonArgs),
     /// Tier-0 maintenance, the replacement for memento-maintenance.sh: list, add, replace, remove, query, verify.
     Tier0(Tier0Args),
 }
@@ -121,6 +124,33 @@ enum Tier0Cmd {
 struct LandmineArgs {
     #[command(subcommand)]
     cmd: LandmineCmd,
+}
+
+#[derive(Args)]
+struct LessonArgs {
+    #[command(subcommand)]
+    cmd: LessonCmd,
+}
+
+#[derive(Subcommand)]
+enum LessonCmd {
+    Add {
+        /// The entry's own title; the slug is this, kebab-cased.
+        #[arg(long)]
+        title: String,
+        /// What the lesson says: the story, one line.
+        #[arg(long)]
+        text: String,
+        /// When it was learned — MM-DD, or YYYY-MM-DD.
+        #[arg(long)]
+        date: String,
+        /// Who or what carries the credit, e.g. owner or R-146.
+        #[arg(long = "ref")]
+        ref_tag: Option<String>,
+        /// Override the derived slug (lowercase letters, digits and dashes).
+        #[arg(long)]
+        slug: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -278,6 +308,24 @@ fn run(root: &Path, cmd: Cmd) -> Result<i32, Box<dyn std::error::Error>> {
             ),
         },
         Cmd::Tier0(t) => tier0(root, t),
+        Cmd::Lesson(a) => match a.cmd {
+            LessonCmd::Add {
+                title,
+                text,
+                date,
+                ref_tag,
+                slug,
+            } => lesson::add(
+                root,
+                lesson::AddArgs {
+                    title: &title,
+                    text: &text,
+                    date: &date,
+                    ref_tag: ref_tag.as_deref(),
+                    slug: slug.as_deref(),
+                },
+            ),
+        },
     }
 }
 

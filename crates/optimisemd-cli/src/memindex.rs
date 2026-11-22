@@ -373,6 +373,7 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
         }
     }
     parts.sort();
+    let lesson_index = fs::read_to_string(root.join("docs/lesson-details.md")).unwrap_or_default();
     for part in &parts {
         if !pointed.contains(part) {
             findings.push(format!("{part}: no index row points at this part (orphan)"));
@@ -392,6 +393,21 @@ pub fn run(root: &Path, targets: Vec<String>) -> Result<i32, Box<dyn Error>> {
                 && (i.saturating_sub(3)..i).any(|j| lines[j].starts_with("### "))
             {
                 findings.push(format!("{part}:{}: a `§slug` label sits under a heading that already carries the address", i + 1));
+            }
+        }
+        // The lessons index is the map to the entries: an entry with no row there is written but
+        // lost to retrieval (the same failure class as the hard-won pointers that went dangling).
+        // Rows without entries are the forward direction, covered above when the row is read.
+        if part.starts_with("docs/lessons/") {
+            for (i, line) in lines.iter().enumerate() {
+                if let Some(slug) = line.strip_prefix("### §") {
+                    if !lesson_index.contains(&format!("| §{slug} |")) {
+                        findings.push(format!(
+                            "{part}:{}: §{slug} has no row in docs/lesson-details.md — the entry exists but nothing can find it",
+                            i + 1
+                        ));
+                    }
+                }
             }
         }
     }
@@ -470,6 +486,37 @@ mod tests {
         fs::write(dir.join("MEMORY.md"), [0xff, 0xfe, 0x00, 0x9f]).unwrap();
         // A check that cannot read its input must fail, not claim zero findings.
         assert_eq!(out(run(&dir, vec![])), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_lesson_entry_without_an_index_row_is_a_finding() {
+        let dir = fixture("lesson-lost");
+        fs::create_dir_all(dir.join("docs/lessons")).unwrap();
+        fs::write(dir.join("MEMORY.md"), "# MEMORY.md\n\n## Subject facts\n").unwrap();
+        fs::write(
+            dir.join("docs/lessons/01-lessons-1-onward.md"),
+            "# Lesson details — entries 1 onward\n\n### §kept\n\n- **Kept (09-23).** Story.\n\n### §lost\n\n- **Lost (09-23).** Story.\n",
+        )
+        .unwrap();
+        let rows = |lost: bool| {
+            format!(
+                "# Lesson details\n\n| § | File |\n|---|---|\n| §kept | `docs/lessons/01-lessons-1-onward.md` |{}\n",
+                if lost {
+                    "\n| §lost | `docs/lessons/01-lessons-1-onward.md` |"
+                } else {
+                    ""
+                }
+            )
+        };
+        fs::write(dir.join("docs/lesson-details.md"), rows(false)).unwrap();
+        assert_eq!(
+            out(run(&dir, vec![])),
+            1,
+            "an entry nothing points at is a lost lesson and must fail the gate"
+        );
+        fs::write(dir.join("docs/lesson-details.md"), rows(true)).unwrap();
+        assert_eq!(out(run(&dir, vec![])), 0, "with both rows the store is consistent");
         let _ = fs::remove_dir_all(&dir);
     }
 
