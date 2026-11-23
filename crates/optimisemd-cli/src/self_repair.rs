@@ -530,12 +530,7 @@ fn check_nightly(root: &Path, r: &mut Reporter) {
     for (label, _) in &steps {
         match cmds.get(label.as_str()) {
             Some(cmd) if is_runnable(cmd) => {
-                let pass = std::process::Command::new("bash")
-                    .args(["-c", cmd])
-                    .current_dir(root)
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false);
+                let pass = step_passes(root, cmd);
                 if pass {
                     fixed.push(label.clone());
                 } else {
@@ -558,6 +553,44 @@ fn check_nightly(root: &Path, r: &mut Reporter) {
     } else {
         r.open("nightly", format!("{name}: {}", still.join(", ")));
     }
+}
+
+/// Run a nightly step the way the nightly runs it: the core's script runner (Git for Windows
+/// first on a Windows host, where a bare `bash` may be the WSL bridge and silently run nothing).
+fn step_passes(root: &Path, cmd: &str) -> bool {
+    let mut parts = cmd.split_whitespace();
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    let rest: Vec<&str> = parts.collect();
+    if first == "bash" || first == "sh" || first == "pwsh" || first == "powershell" {
+        let Some(script) = rest.first() else {
+            return false;
+        };
+        // `bash -c '<one command>'` has no script path; run it through the host shell.
+        if script.starts_with('-') {
+            return std::process::Command::new(first)
+                .args(&rest)
+                .current_dir(root)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+        }
+        let script = if Path::new(script).is_absolute() {
+            PathBuf::from(script)
+        } else {
+            root.join(script)
+        };
+        return optimisemd_core::util::run_script_with_args(&script, root, &rest[1..])
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+    }
+    std::process::Command::new(first)
+        .args(&rest)
+        .current_dir(root)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// A step command the re-check may run: a path or `bash ...`, never a shell function.
