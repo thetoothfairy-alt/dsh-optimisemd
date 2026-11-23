@@ -80,6 +80,13 @@ fn take(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
+/// The harness names a session as eight hex characters; a `Dsh-Session:` trailer carrying
+/// anything else (a relay name like `dsh-im-9`) has no transcript row to join, so the report
+/// says so instead of counting it as a title that regenerating the index could find.
+fn is_harness_short(s: &str) -> bool {
+    s.len() == 8 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// The workspace's session folder name: the absolute path with separators turned into dashes.
 /// Windows roots carry `:` and `\` — both illegal in a folder name — so they collapse too, which
 /// keeps the key a valid single directory name on every platform (v0.4.8).
@@ -510,7 +517,7 @@ pub fn session_commits(root: &Path, days: &str) -> Result<i32, Box<dyn std::erro
     let mut missing_titles = 0usize;
     for (sid, _) in &sessions {
         let short = take(&sid.replace("session-", ""), 8);
-        if !titles.contains_key(&short) {
+        if is_harness_short(&short) && !titles.contains_key(&short) {
             missing_titles += 1;
         }
     }
@@ -531,10 +538,14 @@ pub fn session_commits(root: &Path, days: &str) -> Result<i32, Box<dyn std::erro
             "| `{}` | {} | {} | {} | {} |",
             short,
             clip(
-                titles
-                    .get(&short)
-                    .map(|s| s.as_str())
-                    .unwrap_or("(not in the index)"),
+                if is_harness_short(&short) {
+                    titles
+                        .get(&short)
+                        .map(|s| s.as_str())
+                        .unwrap_or("(not in the index)")
+                } else {
+                    "legacy session — no transcript"
+                },
                 60
             ),
             rows.len(),

@@ -297,3 +297,32 @@ fn self_repair_rebuilds_a_stale_finder_index() {
     assert!(root.join("bin/index-ran").exists(), "{text}");
     assert!(root.join("memory/logs/find-index.json").exists(), "{text}");
 }
+
+#[test]
+fn self_repair_says_a_healed_nightly_is_fixed_since() {
+    if !optimisemd_core::util::shell_available() {
+        return no_shell("self-repair's nightly re-check");
+    }
+    let root = temp("nightly-healed");
+    let home = temp("nightly-healed-home");
+    fs::create_dir_all(root.join("scripts")).unwrap();
+    fs::create_dir_all(root.join("memory/nightly")).unwrap();
+    fs::write(
+        root.join("scripts/nightly-maintenance.sh"),
+        "step \"discovery coverage\" bash scripts/check-discovery-coverage.sh\n",
+    )
+    .unwrap();
+    script(
+        &root,
+        "scripts/check-discovery-coverage.sh",
+        "#!/bin/sh\nexit 0\n",
+    );
+    fs::write(
+        root.join("memory/nightly/2026-11-23.log"),
+        "  FAIL  discovery coverage (exit 1)\nresult: FAILED\n",
+    )
+    .unwrap();
+    let out = run(&root, &home, &["self-repair"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("fixed since"), "{text}");
+}

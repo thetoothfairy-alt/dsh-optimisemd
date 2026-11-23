@@ -771,3 +771,77 @@ fn the_historical_wrapper_names_dispatch() {
         assert!(String::from_utf8_lossy(&out.stdout).contains("stub find hello"));
     }
 }
+
+#[test]
+fn session_commits_marks_a_relay_trailer_as_legacy_without_a_missing_title() {
+    let root = temp("commits-relay");
+    fs::create_dir_all(root.join("docs")).unwrap();
+    fs::write(
+        root.join("docs/session-index.md"),
+        "| # | Started | Session | Parent | Title | Size | Lines |\n\
+         |---|---|---|---|---|---|---|\n\
+         | 1 | 2026-11-16 10:00 | `abcdef12` |  | A title | 1 KB | 1 |\n",
+    )
+    .unwrap();
+    git(&root, &["init", "-q"]);
+    fs::write(root.join("a.txt"), "a").unwrap();
+    git(&root, &["add", "a.txt"]);
+    git(
+        &root,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "work from the relay",
+            "-m",
+            "Dsh-Session: dsh-im-9",
+        ],
+    );
+    let home = temp("commits-relay-home");
+    let out = run(&root, &home, &["session-commits", "--days", "30"]);
+    assert!(out.status.success());
+    let report = fs::read_to_string(root.join("docs/session-commits.md")).unwrap();
+    assert!(
+        report.contains("legacy session — no transcript"),
+        "{report}"
+    );
+    assert!(
+        !report.contains("no title in docs/session-index.md"),
+        "{report}"
+    );
+}
+
+#[test]
+fn session_commits_still_counts_a_harness_session_missing_from_the_index() {
+    let root = temp("commits-hexmissing");
+    fs::create_dir_all(root.join("docs")).unwrap();
+    fs::write(
+        root.join("docs/session-index.md"),
+        "| # | Started | Session | Parent | Title | Size | Lines |\n\
+         |---|---|---|---|---|---|---|\n\
+         | 1 | 2026-11-16 10:00 | `abcdef12` |  | A title | 1 KB | 1 |\n",
+    )
+    .unwrap();
+    git(&root, &["init", "-q"]);
+    fs::write(root.join("a.txt"), "a").unwrap();
+    git(&root, &["add", "a.txt"]);
+    git(
+        &root,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "work from a session the index has not seen",
+            "-m",
+            "Dsh-Session: 9f9f9f9f",
+        ],
+    );
+    let home = temp("commits-hexmissing-home");
+    let out = run(&root, &home, &["session-commits", "--days", "30"]);
+    assert!(out.status.success());
+    let report = fs::read_to_string(root.join("docs/session-commits.md")).unwrap();
+    assert!(
+        report.contains("no title in docs/session-index.md"),
+        "{report}"
+    );
+}

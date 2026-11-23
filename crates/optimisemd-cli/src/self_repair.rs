@@ -6,6 +6,7 @@
 //! and discovery gaps. The report repairs are safe to apply; the guard faults are reported with the
 //! reason and the next action, never silently passed.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -474,27 +475,97 @@ fn check_nightly(root: &Path, r: &mut Reporter) {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
     let text = fs::read_to_string(latest).unwrap_or_default();
-    let fails: Vec<String> = text
-        .lines()
-        .filter_map(|l| {
-            let rest = l.trim().strip_prefix("FAIL")?.trim();
-            if rest.is_empty() {
-                None
-            } else {
-                Some(rest.split(" (exit").next().unwrap_or(rest).to_string())
+    // The log names a failed step on a `FAIL <label> (exit N)` line and prints that step's own
+    // findings above it, so a finding belongs to the step label that follows it.
+    let mut steps: Vec<(String, usize)> = Vec::new();
+    let mut untagged = 0usize;
+    for l in text.lines() {
+        let Some(rest) = l.trim().strip_prefix("FAIL ") else {
+            continue;
+        };
+        let rest = rest.trim();
+        match rest.split_once(" (exit") {
+            Some((label, _)) => steps.push((label.trim().to_string(), 0)),
+            None if rest.starts_with('[') => {
+                if let Some((_, n)) = steps.last_mut() {
+                    *n += 1;
+                } else {
+                    untagged += 1;
+                }
             }
-        })
-        .collect();
-    if !fails.is_empty() {
-        r.open(
-            "nightly",
-            format!("{name}: {} failed — {}", fails.len(), fails.join(", ")),
-        );
-    } else if text.contains("result: FAILED") {
-        r.open("nightly", format!("{name}: the run recorded FAILED"));
-    } else {
-        r.ok("nightly", format!("{name}: no failures"));
+            None if !rest.is_empty() => untagged += 1,
+            None => {}
+        }
     }
+    if steps.is_empty() {
+        if untagged == 0 && !text.contains("result: FAILED") {
+            r.ok("nightly", format!("{name}: no failures"));
+        } else {
+            r.open(
+                "nightly",
+                format!("{name}: {untagged} failure line(s) with no step to re-run"),
+            );
+        }
+        return;
+    }
+    // Re-check each failed step against this tree: the log is a record of last night, not a claim
+    // about now. The step's command is read back from the nightly script it came from.
+    let script =
+        fs::read_to_string(root.join("scripts/nightly-maintenance.sh")).unwrap_or_default();
+    let mut cmds: HashMap<&str, &str> = HashMap::new();
+    for line in script.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("step ") else {
+            continue;
+        };
+        let Some(rest) = rest.strip_prefix('"') else {
+            continue;
+        };
+        let Some((label, cmd)) = rest.split_once('"') else {
+            continue;
+        };
+        cmds.entry(label).or_insert(cmd.trim());
+    }
+    let mut fixed: Vec<String> = Vec::new();
+    let mut still: Vec<String> = Vec::new();
+    for (label, _) in &steps {
+        match cmds.get(label.as_str()) {
+            Some(cmd) if is_runnable(cmd) => {
+                let pass = std::process::Command::new("bash")
+                    .args(["-c", cmd])
+                    .current_dir(root)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                if pass {
+                    fixed.push(label.clone());
+                } else {
+                    still.push(label.clone());
+                }
+            }
+            Some(_) => still.push(format!("{label} (a shell helper, not re-run here)")),
+            None => still.push(format!("{label} (no longer in the nightly script)")),
+        }
+    }
+    if still.is_empty() {
+        r.ok(
+            "nightly",
+            format!(
+                "{name}: {} failure(s) listed, all fixed since ({})",
+                steps.len(),
+                fixed.join(", ")
+            ),
+        );
+    } else {
+        r.open("nightly", format!("{name}: {}", still.join(", ")));
+    }
+}
+
+/// A step command the re-check may run: a path or `bash ...`, never a shell function.
+fn is_runnable(cmd: &str) -> bool {
+    cmd.split_whitespace()
+        .next()
+        .map(|t| t == "bash" || t == "sh" || t.contains('/'))
+        .unwrap_or(false)
 }
 
 fn last_line(text: &str) -> String {
