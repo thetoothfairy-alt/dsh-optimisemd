@@ -150,9 +150,56 @@ pub fn transcript_files(home: &str, ws: &str) -> Vec<(String, std::path::PathBuf
 }
 
 /// Clip at n characters, with an ellipsis only when something was cut.
-/// The transcript text: zstd when the file is compressed, plain text otherwise (older/uncompressed fixtures).
+/// The session-search cache path for a transcript: `sessions` -> `sessions-text`, `sessions-archive` ->
+/// `sessions-archive-text`, the same relative layout and no `.zstd` suffix. `scripts/session-search.py`
+/// builds and refreshes the live half; this report warms the rest (2026-11-28).
+fn mirror_path(path: &Path) -> Option<std::path::PathBuf> {
+    let mut out = std::path::PathBuf::new();
+    let mut mapped = false;
+    for c in path.components() {
+        match c {
+            std::path::Component::Normal(name) => {
+                let s = name.to_string_lossy().to_string();
+                let s = s.strip_suffix(".zstd").map(|x| x.to_string()).unwrap_or(s);
+                if !mapped && (s == "sessions" || s == "sessions-archive") {
+                    out.push(format!("{s}-text"));
+                    mapped = true;
+                } else {
+                    out.push(s);
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    mapped.then_some(out)
+}
+
+/// The transcript text: a fresh cache copy when one exists (plain text, ~10x faster than decompressing
+/// every log), else zstd when the file is compressed, else plain text (older/uncompressed fixtures). A
+/// decompressed transcript is written back to the cache, so the next pass is fast even for the archived
+/// half the search script does not reach (2026-11-28: 1,508 transcripts, ~30 s per report).
 fn transcript_text(path: &Path) -> Option<String> {
-    if path.to_string_lossy().ends_with(".zstd") {
+    let compressed = path.to_string_lossy().ends_with(".zstd");
+    let mirror = if compressed { mirror_path(path) } else { None };
+    if let Some(m) = &mirror {
+        if let (Ok(mt), Ok(st)) = (fs::metadata(m), fs::metadata(path)) {
+            // Only a quiet log is trusted: a session being written right now can grow inside the same
+            // mtime second, and a mirror three lines behind the live log is still a wrong count. One
+            // decompress per live session per run is cheap; the nightly pass is always quiet.
+            let quiet = st
+                .modified()
+                .ok()
+                .and_then(|t| std::time::SystemTime::now().duration_since(t).ok())
+                .map(|d| d > std::time::Duration::from_secs(60))
+                .unwrap_or(false);
+            if mt.is_file() && quiet && mt.modified().ok() >= st.modified().ok() {
+                if let Ok(t) = fs::read_to_string(m) {
+                    return Some(t);
+                }
+            }
+        }
+    }
+    let text = if compressed {
         let out = Command::new("zstd")
             .args(["-dc", &path.to_string_lossy()])
             .output()
@@ -160,10 +207,28 @@ fn transcript_text(path: &Path) -> Option<String> {
         if !out.status.success() {
             return None;
         }
-        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+        String::from_utf8_lossy(&out.stdout).into_owned()
     } else {
-        fs::read_to_string(path).ok()
+        fs::read_to_string(path).ok()?
+    };
+    if let Some(m) = &mirror {
+        if let Ok(src) = fs::metadata(path).and_then(|x| x.modified()) {
+            if let Some(dir) = m.parent() {
+                let _ = fs::create_dir_all(dir);
+            }
+            let tmp = m.with_extension("jsonl.tmp");
+            if fs::write(&tmp, &text).is_ok() {
+                if fs::rename(&tmp, m).is_ok() {
+                    if let Ok(f) = fs::File::open(m) {
+                        let _ = f.set_modified(src);
+                    }
+                } else {
+                    let _ = fs::remove_file(&tmp);
+                }
+            }
+        }
     }
+    Some(text)
 }
 
 fn clip(s: &str, n: usize) -> String {
@@ -971,6 +1036,48 @@ mod tests {
         let text = "{\"type\":\"session/title\",\"data\":{\"title\":\"fallback cut\"}}\n\
                     {\"type\":\"session/title\",\"data\":{\"title\":\"The provider title\"}}\n";
         assert_eq!(last_title(text), "The provider title");
+    }
+
+    #[test]
+    fn mirror_paths_map_the_two_session_roots() {
+        assert_eq!(
+            mirror_path(Path::new("/h/.dsh/sessions/--ws--/a/session.v4.jsonl.zstd")).unwrap(),
+            Path::new("/h/.dsh/sessions-text/--ws--/a/session.v4.jsonl")
+        );
+        assert_eq!(
+            mirror_path(Path::new(
+                "/h/.dsh/sessions-archive/--ws--/a/session.v4.jsonl.zstd"
+            ))
+            .unwrap(),
+            Path::new("/h/.dsh/sessions-archive-text/--ws--/a/session.v4.jsonl")
+        );
+        assert_eq!(mirror_path(Path::new("/tmp/other/session.v4.jsonl")), None);
+    }
+
+    #[test]
+    fn a_fresh_mirror_is_read_instead_of_decompressing() {
+        let home = std::env::temp_dir().join(format!("optimisemd-mirror-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let dir = home.join("sessions/--ws--/session-a");
+        fs::create_dir_all(&dir).unwrap();
+        // An empty .zstd decodes to nothing; the mirror text is what proves which file was read.
+        fs::write(dir.join("session.v4.jsonl.zstd"), b"").unwrap();
+        // The mirror is only trusted for a log that has been quiet for a minute.
+        let two_min_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+        let f = fs::File::options()
+            .write(true)
+            .open(dir.join("session.v4.jsonl.zstd"))
+            .unwrap();
+        f.set_modified(two_min_ago).unwrap();
+        drop(f);
+        let mirror = home.join("sessions-text/--ws--/session-a/session.v4.jsonl");
+        fs::create_dir_all(mirror.parent().unwrap()).unwrap();
+        fs::write(&mirror, "mirror text").unwrap();
+        assert_eq!(
+            transcript_text(&dir.join("session.v4.jsonl.zstd")).unwrap(),
+            "mirror text"
+        );
+        let _ = fs::remove_dir_all(&home);
     }
 
     #[test]
